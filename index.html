@@ -940,7 +940,10 @@ class ValidationEngine{
     if(Math.abs(elevationM)<1e-9){
       return {status:'INFO', msg:'No elevation change specified — static head requirement is zero.'};
     }
-    return {status:'INFO', msg:`Static elevation pressure = ${(elevationPressurePa/1000).toFixed(2)} kPa caused by ${elevationM.toFixed(2)} m elevation change.`};
+    if(elevationM<0){
+      return {status:'INFO', msg:`Pipe drops ${Math.abs(elevationM).toFixed(2)} m in elevation, contributing ${(Math.abs(elevationPressurePa)/1000).toFixed(2)} kPa of gravity-assisted driving pressure (reduces or eliminates the pumping requirement).`};
+    }
+    return {status:'INFO', msg:`Static elevation pressure = ${(elevationPressurePa/1000).toFixed(2)} kPa caused by ${elevationM.toFixed(2)} m elevation rise.`};
   }
 }
 
@@ -954,10 +957,11 @@ class RecommendationEngine{
     if(ctx.velocity<0.5 && ctx.velocity>0) recs.push(`Pipe appears oversized — velocity (${ctx.velocity.toFixed(2)} m/s) is below 0.5 m/s. Consider reducing the pipe diameter to cut capital cost.`);
     if(ctx.minorKTotal>ctx.majorEquivK*0.6 && ctx.fittingCount>4) recs.push('Reduce the number of elbows/fittings in the run, or replace standard elbows with long-radius elbows to cut minor losses.');
     if(ctx.hasGlobe) recs.push('Replace globe valves with gate or ball valves where throttling is not required — globe valves carry a much higher loss coefficient.');
-    if(ctx.pumpEff<65) recs.push('Investigate pump selection/trim — operating efficiency below 65% increases lifetime energy cost significantly.');
+    if(!ctx.isGravityAssisted && ctx.pumpEff<65) recs.push('Investigate pump selection/trim — operating efficiency below 65% increases lifetime energy cost significantly.');
     if(ctx.re>=2300 && ctx.re<4000) recs.push('Flow is in the transitional regime — small changes in flow rate can noticeably shift the friction factor; consider a flow rate that keeps Reynolds number clearly turbulent or clearly laminar.');
     if(ctx.roughnessMm>0.15 && ctx.material!=='Cast Iron') recs.push('Current roughness is on the high side for the selected material — verify pipe condition, or model a smoother alternative such as PVC or stainless steel.');
     if(ctx.cavMargin!=null && ctx.cavMargin<1.0) recs.push('NPSH margin is tight — raise the suction source elevation, reduce suction line losses, or select a pump with lower NPSH-required.');
+    if(ctx.isGravityAssisted) recs.push('The system benefits from gravity flow. Consider operating without a pump if process conditions allow.');
     if(recs.length===0) recs.push('Current design satisfies all standard engineering checks — no changes recommended at this time.');
     return recs;
   }
@@ -1018,17 +1022,26 @@ class HydraulicCalculator{
     const minorLossM = minorKTotal*(velocity*velocity)/(2*g);
     const totalHeadLossM = majorLossM+minorLossM;
 
-    const frictionPressureDropPa = rho*g*totalHeadLossM;     // pipe friction only (major+minor)
-    const elevationPressurePa = rho*g*state.elevationM;       // static head due to elevation change
+    const frictionPressureDropPa = rho*g*totalHeadLossM;     // pipe friction only (major+minor) — always >= 0
+    const elevationPressurePa = rho*g*state.elevationM;       // static head due to elevation change (negative = downhill/gravity-assisted)
     const staticPressurePa = state.staticPressureKpa*1000;    // user-specified static/back pressure
     const totalSystemPressurePa = frictionPressureDropPa + elevationPressurePa;       // friction + elevation
     const totalRequiredPressurePa = totalSystemPressurePa + staticPressurePa;         // + static pressure requirement
 
     const totalDynamicHeadM = totalHeadLossM + state.elevationM + (staticPressurePa/(rho*g));
 
-    const hydPowerW = PumpCalculator.hydraulicPowerW(rho,g,Q_m3s,totalDynamicHeadM);
-    const brakePowerW = PumpCalculator.brakePowerW(hydPowerW, state.pumpEff/100);
-    const annualCost = PumpCalculator.annualEnergyCost(brakePowerW/1000, state.opHours, state.elecCost);
+    // Gravity-assisted flow: when the elevation drop supplies more driving head than the system consumes,
+    // no pump is required. We never surface negative pump power/pressure to the user — instead we report
+    // the surplus as "Gravity Assistance" / "Net Available Pressure" and floor pump duty at zero.
+    const isGravityAssisted = totalRequiredPressurePa < 0;
+    const gravityAssistancePa = elevationPressurePa<0 ? -elevationPressurePa : 0;
+    const netAvailablePressurePa = isGravityAssisted ? -totalRequiredPressurePa : 0;
+    const totalDynamicHeadMDisplay = Math.max(0, totalDynamicHeadM);
+
+    let hydPowerW = PumpCalculator.hydraulicPowerW(rho,g,Q_m3s,totalDynamicHeadM);
+    if(hydPowerW<0) hydPowerW=0;
+    const brakePowerW = hydPowerW>0 ? PumpCalculator.brakePowerW(hydPowerW, state.pumpEff/100) : 0;
+    const annualCost = brakePowerW>0 ? PumpCalculator.annualEnergyCost(brakePowerW/1000, state.opHours, state.elecCost) : 0;
 
     let cav=null;
     if(fluid.extra){
@@ -1040,7 +1053,8 @@ class HydraulicCalculator{
     return {
       geo, D, area, rho, mu, nu, Q_m3s, velocity, re, regime, relRough, f,
       majorLossM, minorLossM, totalHeadLossM, frictionPressureDropPa, elevationPressurePa,
-      staticPressurePa, totalSystemPressurePa, totalRequiredPressurePa, totalDynamicHeadM, hydPowerW, brakePowerW,
+      staticPressurePa, totalSystemPressurePa, totalRequiredPressurePa, totalDynamicHeadM, totalDynamicHeadMDisplay,
+      isGravityAssisted, gravityAssistancePa, netAvailablePressurePa, hydPowerW, brakePowerW,
       annualCost, cav, fluid
     };
   }
@@ -1099,15 +1113,34 @@ class ReportGenerator{
     const u=app.units.labels();
     const fmt=(v,d=2)=>Number(v).toFixed(d);
     const checks=app.buildValidation(res,state);
+    const summarySentence = res.isGravityAssisted
+      ? `The computed friction pressure drop is ${fmt(app.units.paToDisplay(res.frictionPressureDropPa),2)} ${u.press}. The elevation drop supplies ${fmt(app.units.paToDisplay(res.gravityAssistancePa),2)} ${u.press} of gravity-assisted driving pressure, exceeding the friction and static requirements — a net available pressure of ${fmt(app.units.paToDisplay(res.netAvailablePressurePa),2)} ${u.press} remains, so no pump is required.`
+      : `The computed friction pressure drop is ${fmt(app.units.paToDisplay(res.frictionPressureDropPa),2)} ${u.press}, with a total required pressure (friction + elevation + static) of ${fmt(app.units.paToDisplay(res.totalRequiredPressurePa),2)} ${u.press}.`;
+    const staticHeadRows = res.isGravityAssisted
+      ? `<tr><td>Elevation change</td><td>${fmt(state.elevationM,2)} m</td></tr>
+         <tr><td>Gravity assistance</td><td>${fmt(res.gravityAssistancePa/1000,3)} kPa</td></tr>
+         <tr><td>Net available pressure</td><td>${fmt(res.netAvailablePressurePa/1000,3)} kPa</td></tr>`
+      : `<tr><td>Elevation change</td><td>${fmt(state.elevationM,2)} m</td></tr>
+         <tr><td>Static elevation pressure</td><td>${fmt(res.elevationPressurePa/1000,3)} kPa</td></tr>
+         <tr><td>Total system pressure (friction + elevation)</td><td>${fmt(res.totalSystemPressurePa/1000,3)} kPa</td></tr>`;
+    const pumpRows = res.isGravityAssisted
+      ? `<tr><td>User static pressure (input)</td><td>${fmt(res.staticPressurePa/1000,3)} kPa</td></tr>
+         <tr><td>Pump hydraulic power</td><td>0.000 kW (gravity-assisted — no pump required)</td></tr>
+         <tr><td>Pump brake power</td><td>0.000 kW</td></tr>
+         <tr><td>Annual energy cost</td><td>0</td></tr>`
+      : `<tr><td>User static pressure (input)</td><td>${fmt(res.staticPressurePa/1000,3)} kPa</td></tr>
+         <tr><td>Total required pressure (system + static)</td><td>${fmt(res.totalRequiredPressurePa/1000,3)} kPa</td></tr>
+         <tr><td>Total dynamic head</td><td>${fmt(res.totalDynamicHeadMDisplay,3)} m</td></tr>
+         <tr><td>Pump hydraulic power</td><td>${fmt(res.hydPowerW/1000,3)} kW</td></tr>
+         <tr><td>Pump brake power</td><td>${fmt(res.brakePowerW/1000,3)} kW</td></tr>
+         <tr><td>Annual energy cost</td><td>${fmt(res.annualCost,0)}</td></tr>`;
     return `
       <h1>PressureDrop — Engineering Calculation Report</h1>
       <div style="color:#888;font-size:12px;">Prepared by ${app.el('repAuthor').value} · ${new Date().toLocaleString()}</div>
       <h2>1. Executive Summary</h2>
       <p>Project: <b>${app.el('repProject').value}</b>. This report presents the hydraulic design calculation for a
       ${state.pipeShape} pipe, ${fmt(state.lengthM,1)} m in length, conveying ${state.fluidName} at
-      ${fmt(app.units.cToDisplay(state.tempC),1)} ${u.temp}. The computed friction pressure drop is
-      ${fmt(app.units.paToDisplay(res.frictionPressureDropPa),2)} ${u.press}, with a total required pressure
-      (friction + elevation + static) of ${fmt(app.units.paToDisplay(res.totalRequiredPressurePa),2)} ${u.press}, at a mean velocity of ${fmt(res.velocity,2)} m/s
+      ${fmt(app.units.cToDisplay(state.tempC),1)} ${u.temp}. ${summarySentence} Mean velocity is ${fmt(res.velocity,2)} m/s
       (Reynolds number ${res.re.toFixed(0)}, ${res.regime} regime).</p>
       <h2>2. Project Information</h2>
       <table><tr><th>Item</th><th>Value</th></tr>
@@ -1134,16 +1167,9 @@ class ReportGenerator{
       <tr><td>Friction pressure drop</td><td>${fmt(res.frictionPressureDropPa/1000,3)} kPa</td></tr>
       <tr><td>Friction pressure drop / 100m</td><td>${fmt((res.frictionPressureDropPa/1000)/(state.lengthM/100),3)} kPa/100m</td></tr>
       <tr><td colspan="2"><b>Static Head</b></td></tr>
-      <tr><td>Elevation change</td><td>${fmt(state.elevationM,2)} m</td></tr>
-      <tr><td>Static elevation pressure</td><td>${fmt(res.elevationPressurePa/1000,3)} kPa</td></tr>
-      <tr><td>Total system pressure (friction + elevation)</td><td>${fmt(res.totalSystemPressurePa/1000,3)} kPa</td></tr>
+      ${staticHeadRows}
       <tr><td colspan="2"><b>Pump Sizing</b></td></tr>
-      <tr><td>User static pressure (input)</td><td>${fmt(res.staticPressurePa/1000,3)} kPa</td></tr>
-      <tr><td>Total required pressure (system + static)</td><td>${fmt(res.totalRequiredPressurePa/1000,3)} kPa</td></tr>
-      <tr><td>Total dynamic head</td><td>${fmt(res.totalDynamicHeadM,3)} m</td></tr>
-      <tr><td>Pump hydraulic power</td><td>${fmt(res.hydPowerW/1000,3)} kW</td></tr>
-      <tr><td>Pump brake power</td><td>${fmt(res.brakePowerW/1000,3)} kW</td></tr>
-      <tr><td>Annual energy cost</td><td>${fmt(res.annualCost,0)}</td></tr>
+      ${pumpRows}
       </table>
       <h2>5. Recommendations</h2>
       <ul>${RecommendationEngine.generate(app.buildRecCtx(res,state)).map(r=>`<li>${r}</li>`).join('')}</ul>
@@ -1448,6 +1474,9 @@ class PressureDropApp{
       ValidationEngine.efficiencyCheck(state.pumpEff),
       ValidationEngine.staticHeadCheck(state.elevationM, res.elevationPressurePa)
     ];
+    if(res.isGravityAssisted){
+      checks.push({status:'INFO', msg:'Gravity assists flow. No pumping energy is required for the specified elevation difference.'});
+    }
     if(res.cav) checks.push({status:res.cav.status, msg:`NPSH available ${res.cav.npshA.toFixed(2)} m vs required ${res.cav.npshR.toFixed(2)} m (margin ${res.cav.margin.toFixed(2)} m).`});
     return checks;
   }
@@ -1458,7 +1487,8 @@ class PressureDropApp{
       fittingCount:this.fittings.reduce((s,f)=>s+f.qty,0),
       hasGlobe:this.fittings.some(f=>f.name.includes('Globe')),
       pumpEff:state.pumpEff, roughnessMm:state.roughnessMm, material:state.material,
-      cavMargin: res.cav? res.cav.margin : null
+      cavMargin: res.cav? res.cav.margin : null,
+      isGravityAssisted: res.isGravityAssisted
     };
   }
 
@@ -1528,14 +1558,25 @@ class PressureDropApp{
       {label:'Velocity', val:res.velocity.toFixed(2), unit:'m/s'},
       {label:'Reynolds No.', val:res.re.toFixed(0), unit:res.regime},
       {label:'Friction Factor', val:res.f.toFixed(4), unit:''},
-      {label:'Friction Pressure Drop', val:this.units.paToDisplay(res.frictionPressureDropPa).toFixed(2), unit:u.press},
-      {label:'Static Elevation Pressure', val:this.units.paToDisplay(res.elevationPressurePa).toFixed(2), unit:u.press},
-      {label:'Total System Pressure', val:this.units.paToDisplay(res.totalSystemPressurePa).toFixed(2), unit:u.press},
-      {label:'Total Required Pressure', val:this.units.paToDisplay(res.totalRequiredPressurePa).toFixed(2), unit:u.press},
+      {label:'Friction Pressure Drop', val:this.units.paToDisplay(res.frictionPressureDropPa).toFixed(2), unit:u.press}
+    ];
+    if(res.isGravityAssisted){
+      kpis.push(
+        {label:'Gravity Assistance', val:this.units.paToDisplay(res.gravityAssistancePa).toFixed(2), unit:u.press},
+        {label:'Net Available Pressure', val:this.units.paToDisplay(res.netAvailablePressurePa).toFixed(2), unit:u.press}
+      );
+    } else {
+      kpis.push(
+        {label:'Static Elevation Pressure', val:this.units.paToDisplay(res.elevationPressurePa).toFixed(2), unit:u.press},
+        {label:'Total System Pressure', val:this.units.paToDisplay(res.totalSystemPressurePa).toFixed(2), unit:u.press},
+        {label:'Total Required Pressure', val:this.units.paToDisplay(res.totalRequiredPressurePa).toFixed(2), unit:u.press}
+      );
+    }
+    kpis.push(
       {label:'Pump Power', val:(res.brakePowerW/1000).toFixed(2), unit:'kW'},
       {label:'Annual Energy Cost', val:res.annualCost.toFixed(0), unit:u.cost.split('/')[0]},
       {label:'Overall Status', val:worst, unit:'', status:worst}
-    ];
+    );
     this.el('dashKpis').innerHTML = kpis.map(k=>`
       <div class="kpi-card"><div class="kpi-label">${k.label}</div>
       <div class="kpi-value">${k.status?'':''}${k.val}<span class="kpi-unit">${k.unit}</span></div>
@@ -1567,21 +1608,32 @@ class PressureDropApp{
       ['Friction Pressure Drop',this.units.paToDisplay(res.frictionPressureDropPa).toFixed(2),u.press],
       ['Friction Pressure Drop / 100m',((res.frictionPressureDropPa/1000)/(state.lengthM/100)).toFixed(3),'kPa/100m'],
       // Section 2 — Static Head (elevation)
-      ['Elevation Change',state.elevationM.toFixed(2),'m'],
-      ['Static Elevation Pressure',this.units.paToDisplay(res.elevationPressurePa).toFixed(2),u.press],
-      ['Total System Pressure',this.units.paToDisplay(res.totalSystemPressurePa).toFixed(2),u.press],
-      // Section 3 — Pump Sizing
-      ['User Static Pressure (input)',this.units.paToDisplay(res.staticPressurePa).toFixed(2),u.press],
-      ['Total Required Pressure',this.units.paToDisplay(res.totalRequiredPressurePa).toFixed(2),u.press],
-      ['Total Dynamic Head',res.totalDynamicHeadM.toFixed(3),'m'],
+      ['Elevation Change',state.elevationM.toFixed(2),'m']
+    ];
+    if(res.isGravityAssisted){
+      items.push(
+        ['Gravity Assistance',this.units.paToDisplay(res.gravityAssistancePa).toFixed(2),u.press],
+        ['Net Available Pressure',this.units.paToDisplay(res.netAvailablePressurePa).toFixed(2),u.press]
+      );
+    } else {
+      items.push(
+        ['Static Elevation Pressure',this.units.paToDisplay(res.elevationPressurePa).toFixed(2),u.press],
+        ['Total System Pressure',this.units.paToDisplay(res.totalSystemPressurePa).toFixed(2),u.press],
+        // Section 3 — Pump Sizing
+        ['User Static Pressure (input)',this.units.paToDisplay(res.staticPressurePa).toFixed(2),u.press],
+        ['Total Required Pressure',this.units.paToDisplay(res.totalRequiredPressurePa).toFixed(2),u.press]
+      );
+    }
+    items.push(
+      ['Total Dynamic Head',res.totalDynamicHeadMDisplay.toFixed(3),'m'],
       ['Pump Hydraulic Power',(res.hydPowerW/1000).toFixed(3),'kW'],
       ['Pump Brake Power',(res.brakePowerW/1000).toFixed(3),'kW'],
       ['Annual Energy Cost',res.annualCost.toFixed(0),u.cost.split('/')[0]]
-    ];
+    );
     this.el('resultsKpis').innerHTML = items.map(([l,v,un])=>`
       <div class="kpi-card"><div class="kpi-label">${l}</div><div class="kpi-value">${v}<span class="kpi-unit">${un}</span></div></div>`).join('');
 
-    this.el('calcTrace').innerHTML = `
+    let trace = `
       <div class="equation">D = ${res.D.toFixed(4)} m &nbsp;|&nbsp; A = ${res.area.toFixed(6)} m²</div>
       <div class="equation">V = Q/A = ${res.Q_m3s.toFixed(5)} / ${res.area.toFixed(6)} = ${res.velocity.toFixed(3)} m/s</div>
       <div class="equation">Re = VD/ν = ${res.velocity.toFixed(3)}×${res.D.toFixed(4)}/${res.nu.toExponential(3)} = ${res.re.toFixed(0)}</div>
@@ -1590,14 +1642,25 @@ class PressureDropApp{
       <div class="equation">h_f (major) = f(L/D)(V²/2g) = ${res.majorLossM.toFixed(3)} m</div>
       <div class="equation">h_m (minor) = ΣK(V²/2g) = ${state.minorKTotal.toFixed(2)}×${(res.velocity*res.velocity/(2*this.calc.g)).toFixed(4)} = ${res.minorLossM.toFixed(3)} m</div>
       <div class="equation">Friction Pressure Drop = ρg·(h_f+h_m) = ${res.rho.toFixed(1)}×9.807×${res.totalHeadLossM.toFixed(3)} = ${(res.frictionPressureDropPa/1000).toFixed(2)} kPa</div>
-      <div class="equation">— Section 2: Static Head —</div>
+      <div class="equation">— Section 2: Static Head —</div>`;
+    if(res.isGravityAssisted){
+      trace += `
+      <div class="equation">Gravity Assistance = |ρg·Δz| = ${(res.gravityAssistancePa/1000).toFixed(2)} kPa (elevation drops ${Math.abs(state.elevationM).toFixed(2)} m)</div>
+      <div class="equation">Net Available Pressure = Gravity Assistance − Friction Pressure Drop − User Static Pressure = ${(res.netAvailablePressurePa/1000).toFixed(2)} kPa</div>
+      <div class="equation">— Section 3: Pump Sizing —</div>
+      <div class="equation">Gravity supplies more driving pressure than the system consumes → Pump Power = 0 kW, Annual Energy Cost = 0</div>`;
+    } else {
+      trace += `
       <div class="equation">Static Elevation Pressure = ρg·Δz = ${res.rho.toFixed(1)}×9.807×${state.elevationM.toFixed(2)} = ${(res.elevationPressurePa/1000).toFixed(2)} kPa</div>
       <div class="equation">Total System Pressure = Friction + Elevation = ${(res.totalSystemPressurePa/1000).toFixed(2)} kPa</div>
       <div class="equation">— Section 3: Pump Sizing —</div>
-      <div class="equation">Total Required Pressure = System Pressure + User Static Pressure = ${(res.totalSystemPressurePa/1000).toFixed(2)} + ${(res.staticPressurePa/1000).toFixed(2)} = ${(res.totalRequiredPressurePa/1000).toFixed(2)} kPa</div>
-      <div class="equation">Total Dynamic Head = h_total + Δz + P_static/ρg = ${res.totalDynamicHeadM.toFixed(3)} m</div>
+      <div class="equation">Total Required Pressure = System Pressure + User Static Pressure = ${(res.totalSystemPressurePa/1000).toFixed(2)} + ${(res.staticPressurePa/1000).toFixed(2)} = ${(res.totalRequiredPressurePa/1000).toFixed(2)} kPa</div>`;
+    }
+    trace += `
+      <div class="equation">Total Dynamic Head = ${res.totalDynamicHeadMDisplay.toFixed(3)} m</div>
       <div class="equation">P_hyd = ρgQH = ${(res.hydPowerW/1000).toFixed(3)} kW &nbsp;→&nbsp; P_brake = P_hyd/η = ${(res.brakePowerW/1000).toFixed(3)} kW</div>
     `;
+    this.el('calcTrace').innerHTML = trace;
     this.el('recommendations').innerHTML = RecommendationEngine.generate(this.buildRecCtx(res,state)).map(r=>`<div class="alert alert-info">💡 ${r}</div>`).join('');
   }
 
@@ -1668,7 +1731,7 @@ class PressureDropApp{
         const sysHead=hf+hm+state.elevationM+(state.staticPressureKpa*1000)/(res.rho*g);
         labels.push((q*3600).toFixed(0));
         sys.push(sysHead.toFixed(2));
-        pump.push((res.totalDynamicHeadM*1.3*(1-0.5*Math.pow(i/10,2))).toFixed(2));
+        pump.push((res.totalDynamicHeadMDisplay*1.3*(1-0.5*Math.pow(i/10,2))).toFixed(2));
       }
       this.charts.render('chartMain',{type:'line',data:{labels,datasets:[
         {label:'System Curve (m)',data:sys,borderColor:'#FF6B00',backgroundColor:'rgba(255,107,0,0.12)',fill:true,tension:0.3},
@@ -1683,7 +1746,7 @@ class PressureDropApp{
       }]}, options:{plugins:{legend:{labels:{color:th.text}}}, scales:{r:{angleLines:{color:th.grid},grid:{color:th.grid},pointLabels:{color:th.text},ticks:{color:th.text,backdropColor:'transparent'}}}}});
     } else if(tab==='waterfall'){
       const labels=['Major Loss','Minor Loss','Elevation','Static Head','Total'];
-      const vals=[res.majorLossM,res.minorLossM,state.elevationM,(state.staticPressureKpa*1000)/(res.rho*g), res.totalDynamicHeadM];
+      const vals=[res.majorLossM,res.minorLossM,state.elevationM,(state.staticPressureKpa*1000)/(res.rho*g), res.totalDynamicHeadMDisplay];
       this.charts.render('chartMain',{type:'bar',data:{labels,datasets:[{label:'Head (m)',data:vals.map(v=>v.toFixed(3)),backgroundColor:['#FF6B00','#FF8C42','#FFA726','#FFD08A','#8a5a2c']}]},
         options:this._lineOpts(th,'Component','Head (m)')});
     }
@@ -1726,15 +1789,26 @@ class PressureDropApp{
         ['Friction Factor',res.f.toFixed(5),''],
         ['Major Head Loss',res.majorLossM.toFixed(3),'m'],
         ['Minor Head Loss',res.minorLossM.toFixed(3),'m'],
-        ['Friction Pressure Drop',(res.frictionPressureDropPa/1000).toFixed(2),'kPa'],
-        ['Static Elevation Pressure',(res.elevationPressurePa/1000).toFixed(2),'kPa'],
-        ['Total System Pressure',(res.totalSystemPressurePa/1000).toFixed(2),'kPa'],
-        ['User Static Pressure',(res.staticPressurePa/1000).toFixed(2),'kPa'],
-        ['Total Required Pressure',(res.totalRequiredPressurePa/1000).toFixed(2),'kPa'],
-        ['Total Dynamic Head',res.totalDynamicHeadM.toFixed(3),'m'],
-        ['Brake Power',(res.brakePowerW/1000).toFixed(3),'kW'],
-        ['Annual Energy Cost',res.annualCost.toFixed(0),'']
+        ['Friction Pressure Drop',(res.frictionPressureDropPa/1000).toFixed(2),'kPa']
       ];
+      if(res.isGravityAssisted){
+        rows.push(
+          ['Gravity Assistance',(res.gravityAssistancePa/1000).toFixed(2),'kPa'],
+          ['Net Available Pressure',(res.netAvailablePressurePa/1000).toFixed(2),'kPa'],
+          ['Pump Power','0.000','kW'],
+          ['Annual Energy Cost','0','']
+        );
+      } else {
+        rows.push(
+          ['Static Elevation Pressure',(res.elevationPressurePa/1000).toFixed(2),'kPa'],
+          ['Total System Pressure',(res.totalSystemPressurePa/1000).toFixed(2),'kPa'],
+          ['User Static Pressure',(res.staticPressurePa/1000).toFixed(2),'kPa'],
+          ['Total Required Pressure',(res.totalRequiredPressurePa/1000).toFixed(2),'kPa'],
+          ['Total Dynamic Head',res.totalDynamicHeadMDisplay.toFixed(3),'m'],
+          ['Brake Power',(res.brakePowerW/1000).toFixed(3),'kW'],
+          ['Annual Energy Cost',res.annualCost.toFixed(0),'']
+        );
+      }
       CSVExporter.download('pressuredrop_results.csv', rows);
     });
     this.el('expXls').addEventListener('click',()=>{
@@ -1742,13 +1816,23 @@ class PressureDropApp{
       const rows=[['Parameter','Value','Unit'],
         ['Velocity',res.velocity.toFixed(3),'m/s'],
         ['Reynolds Number',res.re.toFixed(0),res.regime],
-        ['Friction Pressure Drop',(res.frictionPressureDropPa/1000).toFixed(2),'kPa'],
-        ['Static Elevation Pressure',(res.elevationPressurePa/1000).toFixed(2),'kPa'],
-        ['Total System Pressure',(res.totalSystemPressurePa/1000).toFixed(2),'kPa'],
-        ['User Static Pressure',(res.staticPressurePa/1000).toFixed(2),'kPa'],
-        ['Total Required Pressure',(res.totalRequiredPressurePa/1000).toFixed(2),'kPa'],
-        ['Brake Power',(res.brakePowerW/1000).toFixed(3),'kW']
+        ['Friction Pressure Drop',(res.frictionPressureDropPa/1000).toFixed(2),'kPa']
       ];
+      if(res.isGravityAssisted){
+        rows.push(
+          ['Gravity Assistance',(res.gravityAssistancePa/1000).toFixed(2),'kPa'],
+          ['Net Available Pressure',(res.netAvailablePressurePa/1000).toFixed(2),'kPa'],
+          ['Pump Power','0.000','kW']
+        );
+      } else {
+        rows.push(
+          ['Static Elevation Pressure',(res.elevationPressurePa/1000).toFixed(2),'kPa'],
+          ['Total System Pressure',(res.totalSystemPressurePa/1000).toFixed(2),'kPa'],
+          ['User Static Pressure',(res.staticPressurePa/1000).toFixed(2),'kPa'],
+          ['Total Required Pressure',(res.totalRequiredPressurePa/1000).toFixed(2),'kPa'],
+          ['Brake Power',(res.brakePowerW/1000).toFixed(3),'kW']
+        );
+      }
       ExcelExporter.download('pressuredrop_results.xls', rows);
     });
     this.el('expJson').addEventListener('click',()=>{
@@ -1812,7 +1896,7 @@ class PressureDropApp{
       const res=this.lastResult, state=this.lastState;
       const name=prompt('Scenario name?','Scenario '+(this.scenarios.list().length+1));
       if(!name) return;
-      this.scenarios.add({name, diameter:res.geo.hydDiaMm, velocity:res.velocity, dP:res.totalRequiredPressurePa/1000, power:res.brakePowerW/1000, cost:res.annualCost});
+      this.scenarios.add({name, diameter:res.geo.hydDiaMm, velocity:res.velocity, dP: res.isGravityAssisted? -res.netAvailablePressurePa/1000 : res.totalRequiredPressurePa/1000, power:res.brakePowerW/1000, cost:res.annualCost, gravityAssisted:res.isGravityAssisted});
       this.renderScenarios();
     });
     this.renderProjects(); this.renderScenarios();
@@ -1860,7 +1944,7 @@ class PressureDropApp{
     const list=this.scenarios.list();
     this.el('scenarioTable').innerHTML = list.map((s,i)=>`
       <tr><td>${s.name}</td><td>${s.diameter.toFixed(1)} mm</td><td>${s.velocity.toFixed(2)} m/s</td>
-      <td>${s.dP.toFixed(2)} kPa</td><td>${s.power.toFixed(2)} kW</td><td>${s.cost.toFixed(0)}</td>
+      <td>${s.gravityAssisted? `Gravity (${Math.abs(s.dP).toFixed(2)} kPa avail.)` : s.dP.toFixed(2)+' kPa'}</td><td>${s.power.toFixed(2)} kW</td><td>${s.cost.toFixed(0)}</td>
       <td><button class="btn btn-sm" data-i="${i}">✕</button></td></tr>`).join('') || '<tr><td colspan="7" style="color:var(--text-faint)">No scenarios yet.</td></tr>';
     this.el('scenarioTable').querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{
       this.scenarios.remove(parseInt(b.dataset.i)); this.renderScenarios();
