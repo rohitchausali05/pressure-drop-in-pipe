@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://rohitchausali05-cell.github.io/pressure-drop-in-pipe/sitemap.xml
