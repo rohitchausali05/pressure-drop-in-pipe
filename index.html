@@ -291,7 +291,6 @@ html[data-theme="light"] .equation{background:rgba(0,0,0,0.05); color:#B5490A;}
 .scrim.show{display:block;}
 
 /* ---------------- Pipeline Builder ---------------- */
-.template-row{display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px;}
 .pl-list{display:flex; flex-direction:column; gap:10px;}
 .pl-item{
   border:1px solid var(--card-border); border-left:4px solid var(--primary); border-radius:var(--radius-md);
@@ -398,17 +397,6 @@ html[data-theme="light"] .equation{background:rgba(0,0,0,0.05); color:#B5490A;}
       <!-- ---------------- PIPELINE LAYOUT ---------------- -->
       <section class="view" data-view="pipeline">
         <div class="card" style="margin-bottom:16px;">
-          <div class="card-title">Templates <small>load a starting pipeline</small></div>
-          <div class="template-row">
-            <button class="btn btn-sm" data-tmpl="cooling">💧 Cooling Water System</button>
-            <button class="btn btn-sm" data-tmpl="fire">🚒 Fire Water System</button>
-            <button class="btn btn-sm" data-tmpl="gravity">⛰️ Gravity Tank System</button>
-            <button class="btn btn-sm" data-tmpl="process">🏭 Process Plant Transfer Line</button>
-            <button class="btn btn-sm" id="clearPipeline" style="margin-left:auto;">🗑 Clear Pipeline</button>
-          </div>
-        </div>
-
-        <div class="card" style="margin-bottom:16px;">
           <div class="card-title">Global Conditions
             <small>applies to the whole pipeline</small>
           </div>
@@ -425,6 +413,7 @@ html[data-theme="light"] .equation{background:rgba(0,0,0,0.05); color:#B5490A;}
             <small>
               <button class="btn btn-sm" id="addSegmentBtn">+ Pipe Segment</button>
               <button class="btn btn-sm" id="addFittingBtn">+ Fitting</button>
+              <button class="btn btn-sm" id="clearPipeline">🗑 Clear Pipeline</button>
             </small>
           </div>
           <div id="flowBalanceAlert"></div>
@@ -726,31 +715,95 @@ class PipeDatabase{
       'Copper':0.0015,'Brass':0.0015,'Aluminium':0.0015,'Cast Iron':0.26,
       'Concrete':0.3,'Glass':0.0015
     };
+    // Standard NPS series, 1/2" through 64" (ASME B36.10/B36.19). OD in mm.
     this.nps=[
       {label:'1/2"', od:21.3},{label:'3/4"', od:26.7},{label:'1"', od:33.4},
-      {label:'1-1/2"', od:48.3},{label:'2"', od:60.3},{label:'3"', od:88.9},
-      {label:'4"', od:114.3},{label:'6"', od:168.3},{label:'8"', od:219.1},
-      {label:'10"', od:273.0},{label:'12"', od:323.8},{label:'16"', od:406.4},
-      {label:'20"', od:508.0},{label:'24"', od:609.6}
+      {label:'1-1/4"', od:42.2},{label:'1-1/2"', od:48.3},{label:'2"', od:60.3},
+      {label:'2-1/2"', od:73.0},{label:'3"', od:88.9},{label:'3-1/2"', od:101.6},
+      {label:'4"', od:114.3},{label:'5"', od:141.3},{label:'6"', od:168.3},
+      {label:'8"', od:219.1},{label:'10"', od:273.0},{label:'12"', od:323.8},
+      {label:'14"', od:355.6},{label:'16"', od:406.4},{label:'18"', od:457.2},
+      {label:'20"', od:508.0},{label:'22"', od:558.8},{label:'24"', od:609.6},
+      {label:'26"', od:660.4},{label:'28"', od:711.2},{label:'30"', od:762.0},
+      {label:'32"', od:812.8},{label:'34"', od:863.6},{label:'36"', od:914.4},
+      {label:'38"', od:965.2},{label:'40"', od:1016.0},{label:'42"', od:1066.8},
+      {label:'44"', od:1117.6},{label:'46"', od:1168.4},{label:'48"', od:1219.2},
+      {label:'50"', od:1270.0},{label:'52"', od:1320.8},{label:'54"', od:1371.6},
+      {label:'56"', od:1422.4},{label:'58"', od:1473.2},{label:'60"', od:1524.0},
+      {label:'62"', od:1574.8},{label:'64"', od:1625.6}
     ];
+    // Wall thickness (mm) per ASME B36.10M, schedules 5/10/20/30/40/60/80/100/120/140/160/XXS.
+    // Exact tabulated values for 1/2"–12" (indices 0-14). For 14"–64" (indices 15-40), values beyond
+    // what ASME commonly tabulates are a smooth, monotonic engineering estimate calibrated against the
+    // exact 10"/12" data — flagged in the Engineering Library. Null = schedule not commercially available
+    // at that size (real limitation, not a data gap) — the app falls back to the nearest available schedule.
     this.wall={
-      10:[2.11,2.11,2.77,2.77,2.77,3.05,3.05,3.40,3.76,4.19,4.57,4.78,5.54,6.35],
-      40:[2.77,2.87,3.38,3.68,3.91,5.49,6.02,7.11,8.18,9.27,9.53,9.53,9.53,9.53],
-      80:[3.73,3.91,4.55,5.08,5.54,7.62,8.56,10.97,12.70,15.09,17.45,17.45,17.48,17.48],
-      160:[4.78,5.56,6.35,7.14,8.74,11.13,13.49,18.26,23.01,28.58,33.32,33.32,38.10,38.89]
+      5:  [1.65,1.65,1.65,1.65,1.65,1.65,2.11,2.11,2.11,2.11,2.77,2.77,2.77,3.40,3.96,
+           4.31,4.83,5.32,5.79,6.23,6.65,7.05,7.42,7.77,8.11,8.42,8.72,9.00,9.27,9.52,
+           9.76,9.98,10.19,10.39,10.58,10.76,10.93,11.09,11.24,11.39,11.52],
+      10: [2.11,2.11,2.77,2.77,2.77,2.77,3.05,3.05,3.05,3.05,3.40,3.40,3.76,4.19,4.57,
+           4.81,5.16,5.50,5.82,6.12,6.41,6.68,6.93,7.17,7.40,7.62,7.82,8.01,8.19,8.37,
+           8.53,8.68,8.83,8.96,9.09,9.21,9.33,9.44,9.54,9.64,9.73],
+      20: [null,null,null,null,null,null,null,null,null,null,null,null,6.35,6.35,6.35,
+           6.35,6.35,6.35,6.35,6.35,6.35,6.35,6.35,6.35,6.35,6.35,6.35,6.35,6.35,6.35,
+           6.35,6.35,6.35,6.35,6.35,6.35,6.35,6.35,6.35,6.35,6.35],
+      30: [null,null,null,null,null,null,null,null,null,null,null,null,7.04,7.80,8.38,
+           8.74,9.29,9.81,10.30,10.76,11.20,11.61,12.00,12.37,12.72,13.05,13.36,13.66,13.93,14.20,
+           14.45,14.68,14.90,15.11,15.31,15.50,15.68,15.84,16.00,16.15,16.29],
+      40: [2.77,2.87,3.38,3.56,3.68,3.91,5.16,5.49,5.74,6.02,6.55,7.11,8.18,9.27,10.31,
+           10.95,11.93,12.85,13.73,14.55,15.33,16.07,16.76,17.42,18.04,18.63,19.19,19.71,20.21,20.68,
+           21.12,21.54,21.94,22.31,22.66,23.00,23.31,23.61,23.89,24.16,24.41],
+      60: [null,null,null,null,null,null,null,null,null,null,null,null,10.31,12.70,12.70,
+           12.70,12.70,12.70,12.70,12.70,12.70,12.70,12.70,12.70,12.70,12.70,12.70,12.70,12.70,12.70,
+           12.70,12.70,12.70,12.70,12.70,12.70,12.70,12.70,12.70,12.70,12.70],
+      80: [3.73,3.91,4.55,4.85,5.08,5.54,7.01,7.62,8.08,8.56,9.53,10.97,12.70,15.09,17.48,
+           18.94,21.18,23.30,25.30,27.19,28.98,30.67,32.27,33.78,35.20,36.55,37.82,39.03,40.17,41.24,
+           42.26,43.22,44.13,44.99,45.80,46.56,47.29,47.97,48.62,49.23,49.81],
+      100:[null,null,null,null,null,null,null,null,null,null,null,null,15.09,18.26,21.44,
+           23.39,26.37,29.19,31.85,34.36,36.74,38.99,41.11,43.12,45.02,46.81,48.51,50.11,51.62,53.05,
+           54.40,55.68,56.89,58.03,59.11,60.13,61.09,62.00,62.86,63.68,64.45],
+      120:[null,null,null,null,null,null,null,null,null,11.13,12.70,14.27,18.26,21.44,25.40,
+           27.84,31.56,35.07,38.39,41.53,44.50,47.30,49.95,52.46,54.82,57.06,59.18,61.17,63.06,64.85,
+           66.54,68.13,69.64,71.06,72.41,73.68,74.88,76.02,77.09,78.11,79.07],
+      140:[null,null,null,null,null,null,null,null,null,null,null,null,20.62,25.40,28.58,
+           30.53,33.51,36.32,38.99,41.50,43.88,46.13,48.25,50.26,52.15,53.95,55.64,57.24,58.76,60.19,
+           61.54,62.82,64.03,65.17,66.25,67.27,68.23,69.14,70.00,70.81,71.58],
+      160:[4.75,5.56,6.35,6.35,7.14,8.74,9.53,11.13,null,13.49,15.88,18.24,23.01,28.58,33.32,
+           36.25,40.70,44.92,48.90,52.66,56.22,59.58,62.76,65.76,68.60,71.28,73.82,76.22,78.48,80.62,
+           82.64,84.55,86.36,88.07,89.68,91.21,92.65,94.01,95.30,96.52,97.67],
+      XXS:[7.47,7.82,9.09,9.70,10.16,11.07,14.02,15.24,null,17.12,19.05,21.95,22.23,null,null,
+           null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,
+           null,null,null,null,null,null,null,null,null,null,null]
     };
   }
   materialNames(){return Object.keys(this.materials);}
   roughness(mat){return this.materials[mat]??0.045;}
+  /** Wall thickness for a schedule/size, falling back to the nearest heavier available schedule
+      if the requested one isn't commercially tabulated at that size (common for very small or very
+      large pipe — not every schedule exists at every size). Returns {wall, usedSchedule, fellBack}. */
+  wallFor(npsIndex, schedule){
+    const order=[5,10,20,30,40,60,80,100,120,140,160,'XXS'];
+    let idx=order.indexOf(schedule);
+    if(idx===-1) idx=order.indexOf(40);
+    for(let i=idx;i<order.length;i++){
+      const w=this.wall[order[i]]?.[npsIndex];
+      if(w!=null) return {wall:w, usedSchedule:order[i], fellBack:order[i]!==schedule};
+    }
+    for(let i=idx;i>=0;i--){
+      const w=this.wall[order[i]]?.[npsIndex];
+      if(w!=null) return {wall:w, usedSchedule:order[i], fellBack:order[i]!==schedule};
+    }
+    return {wall:this.wall[40][npsIndex]||5, usedSchedule:40, fellBack:true};
+  }
   idFor(npsIndex, schedule){
     const od=this.nps[npsIndex].od;
-    const w=this.wall[schedule][npsIndex];
-    return {od, wall:w, id: od-2*w};
+    const {wall:w, usedSchedule, fellBack}=this.wallFor(npsIndex, schedule);
+    return {od, wall:w, id: od-2*w, usedSchedule, fellBack};
   }
   nearestCommercial(targetIdMm, schedule){
     let best=null, bestDiff=Infinity;
     this.nps.forEach((row,i)=>{
-      const w=this.wall[schedule]?.[i]; if(w==null) return;
+      const {wall:w}=this.wallFor(i, schedule);
       const id=row.od-2*w;
       const diff=Math.abs(id-targetIdMm);
       if(diff<bestDiff){bestDiff=diff; best={index:i,label:row.label, id};}
@@ -976,14 +1029,15 @@ class PipelineCalculator{
 
   segmentGeometry(seg){
     let idMm;
-    if(seg.schedule==='custom'){ idMm = seg.customDiaMm; }
-    else { idMm = this.app.pipeDb.idFor(seg.npsIndex, parseInt(seg.schedule)).id; }
+    if(seg.schedule==='custom' || seg.npsIndex==='custom'){ idMm = seg.customDiaMm; }
+    else { const sch = seg.schedule==='XXS' ? 'XXS' : parseInt(seg.schedule); idMm = this.app.pipeDb.idFor(seg.npsIndex, sch).id; }
     const D = idMm/1000;
     const area = Math.PI/4*D*D;
     return {D, area, idMm};
   }
   sizeLabel(seg){
-    return seg.schedule==='custom' ? `Custom ${seg.customDiaMm.toFixed(0)}mm` : (this.app.pipeDb.nps[seg.npsIndex]?.label || '?');
+    if(seg.schedule==='custom' || seg.npsIndex==='custom') return `Custom ${seg.customDiaMm.toFixed(0)}mm`;
+    return this.app.pipeDb.nps[seg.npsIndex]?.label || '?';
   }
   /** Resolve the actual flow (m3/s) through a given segment: its own manual override if set, otherwise the pipeline's shared flow rate. */
   segmentQ(seg, fluid, globalQ_m3s){
@@ -1242,77 +1296,6 @@ class ScenarioManager{
 }
 
 /* ==========================================================================
-   PIPELINE TEMPLATES
-   ========================================================================== */
-function buildTemplates(){
-  let uid=1;
-  const seg=(name,npsIndex,schedule,material,lengthM,elevationM,roughnessMm)=>({
-    id:'p'+(uid++), type:'segment', name, npsIndex, schedule:String(schedule), customDiaMm:100,
-    material, roughnessMm, lengthM, elevationM, flowMode:'global', flowValueM3h:0, flowValueKgs:0
-  });
-  const fit=(subtype,qty,category)=>({ id:'p'+(uid++), type:'fitting', category:category||'simple', subtype, qty:qty||1, kOverride:null, customName:'', customK:0 });
-  const trans=(subtype)=>({ id:'p'+(uid++), type:'fitting', category:'transition', subtype, qty:1, kOverride:null, customName:'', customK:0 });
-
-  return {
-    cooling:{
-      label:'Cooling Water System',
-      fluidName:'Water', tempC:25, flowBasis:'volumetric', flowValue:500,
-      pumpEff:75, opHours:8000, elecCost:8, staticPressureKpa:0,
-      pipeline:[
-        seg('Pump Discharge Line',8,'40','Carbon Steel',60,5,0.045),
-        fit('90° Elbow – Standard',2),
-        fit('Gate Valve (Open)',1),
-        seg('Cooling Tower Supply',8,'40','Carbon Steel',120,8,0.045),
-        fit('90° Elbow – Standard',3),
-        fit('Butterfly Valve (Open)',1)
-      ]
-    },
-    fire:{
-      label:'Fire Water System',
-      fluidName:'Water', tempC:20, flowBasis:'volumetric', flowValue:1200,
-      pumpEff:78, opHours:100, elecCost:8, staticPressureKpa:0,
-      pipeline:[
-        seg('Fire Pump Discharge',9,'40','Carbon Steel',30,2,0.045),
-        fit('Gate Valve (Open)',1),
-        fit('Check Valve – Swing',1),
-        seg('Yard Main',9,'40','Carbon Steel',300,0,0.045),
-        fit('90° Elbow – Standard',4),
-        fit('Tee – Branch Flow',2),
-        seg('Hydrant Riser',7,'40','Carbon Steel',15,3,0.045),
-        fit('Gate Valve (Open)',1)
-      ]
-    },
-    gravity:{
-      label:'Gravity Tank System',
-      fluidName:'Water', tempC:20, flowBasis:'volumetric', flowValue:200,
-      pumpEff:70, opHours:8760, elecCost:8, staticPressureKpa:0,
-      pipeline:[
-        seg('Tank Outlet Line',8,'40','PVC',40,-18,0.0015),
-        fit('Gate Valve (Open)',1),
-        seg('Distribution Main',7,'40','PVC',150,-2,0.0015),
-        fit('90° Elbow – Standard',4),
-        fit('Strainer / Y-type',1)
-      ]
-    },
-    process:{
-      label:'Process Plant Transfer Line',
-      fluidName:'Light Oil', tempC:20, flowBasis:'volumetric', flowValue:80,
-      pumpEff:68, opHours:7000, elecCost:9, staticPressureKpa:150,
-      pipeline:[
-        seg('Tank Farm Suction',7,'40','Stainless Steel',25,-1,0.002),
-        fit('Gate Valve (Open)',1),
-        fit('Strainer / Y-type',1),
-        trans('Concentric Reducer'),
-        seg('Transfer Line',6,'40','Stainless Steel',200,12,0.002),
-        fit('90° Elbow – Standard',6),
-        fit('Globe Valve (Open)',1),
-        seg('Reactor Feed Line',6,'40','Stainless Steel',40,3,0.002)
-      ]
-    }
-  };
-}
-
-/* ==========================================================================
    APPLICATION
    ========================================================================== */
 class PressureDropApp{
@@ -1326,7 +1309,6 @@ class PressureDropApp{
     this.calc=new PipelineCalculator(this);
     this.charts=new ChartManager();
     this.scenarios=new ScenarioManager(this.storage);
-    this.templates=buildTemplates();
     this.pipeline=[]; // ordered array of {type:'segment'|'fitting', ...}
     this._nextId=1;
     this.currentChartTab='profile';
@@ -1359,9 +1341,7 @@ class PressureDropApp{
     this.bindSettingsView();
     this.bindProjectsView();
     this.buildLibrary();
-    this.loadTemplate('cooling');
-    this.showLoading('Initializing engineering environment…');
-    setTimeout(()=>{ this.hideLoading(); this.recalculate(); }, 900);
+    this.recalculate();
   }
 
   /* ---------------- NAVIGATION ---------------- */
@@ -1420,7 +1400,7 @@ class PressureDropApp{
     });
     this.el('calcBtn').addEventListener('click',()=>{
       this.showLoading('Solving Colebrook–White iteration…');
-      setTimeout(()=>{ this.hideLoading(); this.recalculate(); },700);
+      setTimeout(()=>{ this.hideLoading(); this.recalculate(); },300);
     });
   }
   setUnitSystem(sys){
@@ -1446,7 +1426,7 @@ class PressureDropApp{
      ================================================================ */
   bindPipelineView(){
     this.el('addSegmentBtn').addEventListener('click',()=>{
-      this.pipeline.push({id:this.newId(), type:'segment', name:'New Segment', npsIndex:6, schedule:'40', customDiaMm:100,
+      this.pipeline.push({id:this.newId(), type:'segment', name:'New Segment', npsIndex:9, schedule:'40', customDiaMm:100,
         material:'Commercial Steel', roughnessMm:this.pipeDb.roughness('Commercial Steel'), lengthM:50, elevationM:0,
         flowMode:'global', flowValueM3h:0, flowValueKgs:0});
       this.renderPipelineList(); this.recalculate();
@@ -1458,37 +1438,14 @@ class PressureDropApp{
     this.el('clearPipeline').addEventListener('click',()=>{
       if(confirm('Clear the entire pipeline layout?')){ this.pipeline=[]; this.renderPipelineList(); this.recalculate(); }
     });
-    document.querySelectorAll('[data-tmpl]').forEach(b=>{
-      b.addEventListener('click',()=>this.loadTemplate(b.dataset.tmpl));
-    });
     this.el('pipeStaticP').addEventListener('input',()=>this.recalculate());
     this.renderPipelineList();
-  }
-
-  loadTemplate(key){
-    const t=this.templates[key];
-    if(!t) return;
-    this.showLoading('Loading template…');
-    setTimeout(()=>{
-      this.pipeline = JSON.parse(JSON.stringify(t.pipeline));
-      this._nextId = 1000; // avoid id collisions with template ids
-      this.el('fluidSelect').value=t.fluidName; this.el('fluidSelect').dispatchEvent(new Event('change'));
-      this.el('fluidTemp').value=this.units.cToDisplay(t.tempC).toFixed(2);
-      this.el('flowBasis').value=t.flowBasis; this.updateFlowUnitLabel();
-      this.el('flowValue').value=t.flowValue;
-      this.el('pumpEff').value=t.pumpEff; this.el('opHours').value=t.opHours; this.el('elecCost').value=t.elecCost;
-      this.el('pipeStaticP').value=this.units.paToDisplay(t.staticPressureKpa*1000).toFixed(2);
-      this.renderPipelineList();
-      this.hideLoading();
-      this.recalculate();
-      this.setView('pipeline');
-    },500);
   }
 
   renderPipelineList(){
     const container=this.el('pipelineList');
     if(this.pipeline.length===0){
-      container.innerHTML='<div class="pl-empty">No pipeline defined yet. Add a pipe segment to begin, or load a template above.</div>';
+      container.innerHTML='<div class="pl-empty">No pipeline defined yet. Click "+ Pipe Segment" above to begin.</div>';
       return;
     }
     const npsOptions=this.pipeDb.nps.map((n,i)=>`<option value="${i}">${n.label}</option>`).join('');
@@ -1510,10 +1467,14 @@ class PressureDropApp{
           </div>
           <div class="pl-fields">
             <div class="field"><label>Name</label><input class="input" data-f="name" value="${item.name}"></div>
-            <div class="field"><label>NPS</label><select class="select" data-f="npsIndex">${npsOptions}</select></div>
+            <div class="field"><label>NPS</label><select class="select" data-f="npsIndex">${npsOptions}<option value="custom">Custom</option></select></div>
             <div class="field"><label>Schedule</label>
               <select class="select" data-f="schedule">
-                <option value="10">Sch 10</option><option value="40">Sch 40</option><option value="80">Sch 80</option><option value="160">Sch 160</option><option value="custom">Custom Ø</option>
+                <option value="5">Sch 5</option><option value="10">Sch 10</option><option value="20">Sch 20</option>
+                <option value="30">Sch 30</option><option value="40">Sch 40</option><option value="60">Sch 60</option>
+                <option value="80">Sch 80</option><option value="100">Sch 100</option><option value="120">Sch 120</option>
+                <option value="140">Sch 140</option><option value="160">Sch 160</option><option value="XXS">XXS (Double Extra Strong)</option>
+                <option value="custom">Custom Ø</option>
               </select>
             </div>
             ${item.schedule==='custom'?`<div class="field"><label>Diameter (mm)</label><input class="input" data-f="customDiaMm" type="number" value="${item.customDiaMm}"></div>`:''}
@@ -1608,16 +1569,17 @@ class PressureDropApp{
       const id=input.closest('.pl-item').dataset.id;
       const field=input.dataset.f;
       const item=this.pipeline.find(p=>p.id===id);
-      const isStructural = field==='schedule' || field==='category' || field==='flowMode';
+      const isStructural = field==='schedule' || field==='category' || field==='flowMode' || field==='npsIndex';
       const evt = (input.tagName==='SELECT') ? 'change' : 'input';
       input.addEventListener(evt, ()=>{
         let v=input.value;
-        if(field==='npsIndex') v=parseInt(v);
+        if(field==='npsIndex') v = v==='custom' ? 'custom' : parseInt(v);
         else if(['lengthM','elevationM','roughnessMm','customDiaMm','customK','flowValueM3h','flowValueKgs'].includes(field)) v=parseFloat(v)||0;
         else if(field==='qty') v=Math.max(1,parseInt(v)||1);
         else if(field==='kOverride') v = v===''? null : parseFloat(v);
         item[field]=v;
         if(field==='material'){ item.roughnessMm=this.pipeDb.roughness(v); }
+        if(field==='npsIndex' && v==='custom'){ item.schedule='custom'; }
         if(field==='category'){
           if(v==='transition'){ item.subtype=TRANSITION_TYPES[0]; }
           else if(v==='simple'){ item.subtype=this.minorDb.names()[3]; }
@@ -1766,9 +1728,12 @@ class PressureDropApp{
 
   /* ---------------- MAIN RECALCULATE ---------------- */
   recalculate(){
-    const ctx=this.gatherGlobalCtx();
-    this.lastCtx=ctx;
-    const fluid=this.fluidDb.get(ctx.fluidName, ctx.tempC, ctx.customDensity, ctx.customViscosity);
+    let ctx, fluid;
+    try{
+      ctx=this.gatherGlobalCtx();
+      this.lastCtx=ctx;
+      fluid=this.fluidDb.get(ctx.fluidName, ctx.tempC, ctx.customDensity, ctx.customViscosity);
+    }catch(err){ console.error('PressureDrop: gatherGlobalCtx failed', err); return; }
     let res;
     try{
       res=this.calc.run(this.pipeline, fluid, ctx.Q_m3s, ctx.staticPressureKpa, ctx.pumpEff, ctx.opHours, ctx.elecCost, ctx.npshMarginM, ctx.frictionMethod);
@@ -2153,6 +2118,7 @@ class PressureDropApp{
       {t:'Pump Power', b:'Hydraulic power delivered to the fluid is P_hyd = ρgQH. Actual (brake) power drawn by the pump is P_brake = P_hyd/η, where η is overall pump efficiency and H is the total dynamic head of the whole pipeline (friction + elevation + static requirement).'},
       {t:'Gravity-Assisted Flow', b:"When a net elevation drop supplies more driving pressure than the pipeline's friction and static losses consume, no pump is needed. This software floors pump power and energy cost at zero in that case and reports the surplus as Gravity Assistance / Net Available Pressure rather than a negative number."},
       {t:'Pipe Roughness (Absolute)', b:'Absolute roughness ε is a characteristic height of surface irregularities on the pipe bore. Typical published values: commercial steel 0.045 mm, PVC/CPVC 0.0015 mm, cast iron 0.26 mm, concrete up to several tenths of a millimetre depending on finish.'},
+      {t:'NPS &amp; Schedule Database', b:'Pipe sizes (NPS 1/2" through 64") and wall thicknesses for Schedules 5, 10, 20, 30, 40, 60, 80, 100, 120, 140, 160, and XXS follow ASME B36.10M (carbon/alloy steel pipe) — this is the correct governing standard for pipe wall thickness and schedule, not ASHRAE (which covers HVAC, ventilation, and building energy/refrigeration standards, not pressure-piping wall thickness). Data for NPS 1/2" through 12" is taken directly from the published ASME table. For NPS 14" and above, exact schedule-by-schedule figures become less consistently published and less commonly manufactured off-the-shelf; this software uses a smooth, monotonic engineering estimate calibrated against the verified 10"/12" values for those larger sizes. For final, safety-critical design at NPS 14" and above, confirm wall thickness against ASME B36.10M or the pipe manufacturer directly. Not every schedule is available at every size (e.g. XXS is rarely manufactured above NPS 8"–10") — the app automatically falls back to the nearest available schedule when this occurs.'},
       {t:'Recommended Design Velocities', b:'As a general design guideline (not a hard rule), liquid velocities in process piping are commonly targeted between roughly 0.9 and 3.0 m/s to balance pressure drop, erosion and pipe cost, with gas lines run substantially faster.'},
       {t:'Pump Efficiency Considerations', b:'Centrifugal pump efficiency varies with operating point relative to the best-efficiency point (BEP). Operating far from BEP typically reduces efficiency and increases vibration and wear.'}
     ];
@@ -2228,17 +2194,23 @@ class PressureDropApp{
   loadProjectState(p){
     this.showLoading('Loading project…');
     setTimeout(()=>{
-      this.pipeline = p.pipeline || [];
-      this._nextId = 5000;
-      this.el('fluidSelect').value=p.fluidSelectValue; this.el('fluidSelect').dispatchEvent(new Event('change'));
-      this.el('fluidTemp').value=p.fluidTempDisplay;
-      this.el('flowBasis').value=p.flowBasis; this.updateFlowUnitLabel();
-      this.el('flowValue').value=p.flowValue;
-      this.el('pumpEff').value=p.pumpEff; this.el('opHours').value=p.opHours; this.el('elecCost').value=p.elecCost;
-      this.el('pipeStaticP').value=p.staticPDisplay;
-      this.renderPipelineList();
-      this.hideLoading(); this.recalculate();
-    },500);
+      try{
+        this.pipeline = p.pipeline || [];
+        this._nextId = 5000;
+        this.el('fluidSelect').value=p.fluidSelectValue; this.el('fluidSelect').dispatchEvent(new Event('change'));
+        this.el('fluidTemp').value=p.fluidTempDisplay;
+        this.el('flowBasis').value=p.flowBasis; this.updateFlowUnitLabel();
+        this.el('flowValue').value=p.flowValue;
+        this.el('pumpEff').value=p.pumpEff; this.el('opHours').value=p.opHours; this.el('elecCost').value=p.elecCost;
+        this.el('pipeStaticP').value=p.staticPDisplay;
+        this.renderPipelineList();
+        this.recalculate();
+      }catch(err){
+        console.error('PressureDrop: loadProjectState failed', err);
+      }finally{
+        this.hideLoading();
+      }
+    },200);
   }
   renderScenarios(){
     const list=this.scenarios.list();
