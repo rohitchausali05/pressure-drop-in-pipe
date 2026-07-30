@@ -308,6 +308,14 @@ html[data-theme="light"] .equation{background:rgba(0,0,0,0.05); color:#B5490A;}
 .pl-fields .field{flex:1; min-width:110px; margin-bottom:0;}
 .pl-empty{text-align:center; padding:30px; color:var(--text-faint); font-size:13px;}
 
+.pd-diagram{display:flex; align-items:center; gap:2px; padding:14px 4px; min-width:min-content;}
+.pd-node{background:var(--card); border:1px solid var(--card-border); border-radius:10px; padding:9px 11px; font-size:11px; text-align:center; min-width:104px; flex-shrink:0;}
+.pd-node.segment{border-left:4px solid var(--primary);}
+.pd-node.fitting{border-left:4px solid var(--accent); border-radius:22px; min-width:80px;}
+.pd-node .pd-title{font-weight:800; font-size:11.5px; margin-bottom:3px; white-space:nowrap;}
+.pd-node .pd-sub{color:var(--text-faint); font-size:9.5px; line-height:1.5;}
+.pd-arrow{color:var(--text-faint); font-size:16px; flex-shrink:0; padding:0 1px;}
+
 .breakdown-row{margin-bottom:12px;}
 .breakdown-head{display:flex; justify-content:space-between; font-size:12.5px; margin-bottom:5px;}
 .breakdown-head .name{font-weight:600;}
@@ -424,7 +432,7 @@ html[data-theme="light"] .equation{background:rgba(0,0,0,0.05); color:#B5490A;}
           <div class="card">
             <div class="card-title">Segment Results <small>Darcy–Weisbach per segment</small></div>
             <div class="table-wrap">
-              <table><thead><tr><th>Segment</th><th>Size</th><th>Flow</th><th>Velocity</th><th>Re</th><th>f</th><th>Major Loss</th><th>Friction ΔP</th></tr></thead><tbody id="segmentResultsTable"></tbody></table>
+              <table><thead><tr><th>Segment</th><th>Size</th><th>OD/Wall/ID (mm)</th><th>Flow</th><th>Velocity</th><th>Re</th><th>f</th><th>Major Loss</th><th>Friction ΔP</th></tr></thead><tbody id="segmentResultsTable"></tbody></table>
             </div>
           </div>
           <div class="card">
@@ -447,6 +455,25 @@ html[data-theme="light"] .equation{background:rgba(0,0,0,0.05); color:#B5490A;}
             <div class="card-title">Segment &amp; Fitting Counts</div>
             <div id="countsSummary" style="font-size:13px; line-height:2;"></div>
           </div>
+        </div>
+
+        <div class="card" style="margin-top:16px;">
+          <div class="card-title">Pipeline Diagram <small>auto-generated, updates live</small></div>
+          <div id="pipelineDiagram" style="overflow-x:auto;"></div>
+        </div>
+
+        <div class="card" style="margin-top:16px;">
+          <div class="card-title">Automatic Pipe Size Recommendation <small>based on flow, the project velocity standard &amp; fluid</small></div>
+          <div class="field-row">
+            <div class="field"><label>Flow Rate (m³/h)</label><input class="input" id="sizeRecFlow" type="number" step="any" placeholder="auto from pipeline flow"></div>
+            <div class="field"><label>Material</label><select class="select" id="sizeRecMaterial"></select></div>
+            <div class="field"><label>Velocity Standard</label><div class="input" id="sizeRecRangeDisplay" style="display:flex; align-items:center; font-weight:700;">—</div></div>
+          </div>
+          <div class="table-wrap">
+            <table><thead><tr><th>NPS (Sch 40)</th><th>Velocity</th><th>Friction ΔP / 100m</th><th>Relative Cost</th><th>Status</th></tr></thead><tbody id="sizeRecTable"></tbody></table>
+          </div>
+          <div id="sizeRecSummary" style="margin-top:10px;"></div>
+          <div class="hint">Relative Cost is a simple material cross-section proxy (OD × wall thickness) for ranking sizes against each other — not an installed-cost estimate.</div>
         </div>
       </section>
 
@@ -543,6 +570,78 @@ html[data-theme="light"] .equation{background:rgba(0,0,0,0.05); color:#B5490A;}
         </div>
       </section>
 
+      <!-- ---------------- PUMP ENGINEERING ---------------- -->
+      <section class="view" data-view="pumpEng">
+        <div class="card" style="margin-bottom:16px;">
+          <div class="card-title">Pump Curve Data Entry
+            <small>
+              <input type="file" id="pumpCsvFile" accept=".csv" style="display:none;">
+              <button class="btn btn-sm" id="pumpCsvBtn">⬆ Import CSV</button>
+              <input type="file" id="pumpRefFile" accept=".pdf,.png,.jpg,.jpeg,.xlsx,.xls" style="display:none;">
+              <button class="btn btn-sm" id="pumpRefBtn">📎 Attach Datasheet (reference only)</button>
+              <button class="btn btn-sm" id="pumpAddPointBtn">+ Add Point</button>
+              <button class="btn btn-sm" id="pumpClearBtn">🗑 Clear Curve</button>
+            </small>
+          </div>
+          <div class="hint" style="margin-bottom:10px;">
+            Enter points read off the pump manufacturer's performance curve (e.g. Kirloskar, KSB, Grundfos, Flowserve, Wilo datasheets).
+            <b>CSV import</b> parses a real file (columns: Flow,Head,Efficiency,Power,NPSHr — header row required, missing columns left blank).
+            PDF/XLSX/PNG/JPG datasheets can't be read automatically — attaching one just keeps it on screen as a reference
+            while you type the points in yourself; for images it's shown inline below.
+          </div>
+          <div id="pumpRefPreview"></div>
+          <div class="table-wrap">
+            <table><thead><tr><th>Flow (m³/h)</th><th>Head (m)</th><th>Efficiency (%)</th><th>Power (kW)</th><th>NPSHr (m)</th><th></th></tr></thead><tbody id="pumpPointsTable"></tbody></table>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom:16px;">
+          <div class="card-title">Pump Curve Comparison <small>System · Proposed · Uploaded</small></div>
+          <div class="chart-box tall"><canvas id="chartPumpCompare"></canvas></div>
+        </div>
+
+        <div class="grid grid-2">
+          <div class="card">
+            <div class="card-title">Operating Point <small>uploaded curve ∩ system curve</small></div>
+            <div class="grid grid-kpi" id="opPointKpis"></div>
+          </div>
+          <div class="card">
+            <div class="card-title">Best Efficiency Point (BEP)</div>
+            <div class="grid grid-kpi" id="bepKpis"></div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:16px;">
+          <div class="card-title">Pump Validation</div>
+          <div id="pumpValidation"></div>
+        </div>
+
+        <div class="card" style="margin-top:16px;">
+          <div class="card-title">VFD &amp; Affinity Law Analysis</div>
+          <div class="field-row">
+            <div class="field"><label>Rated Frequency (Hz)</label><input class="input" id="pumpRatedHz" type="number" value="50" step="any"></div>
+            <div class="field"><label>Current Frequency (Hz)</label><input class="input" id="pumpCurrentHz" type="number" value="50" step="any"></div>
+          </div>
+          <div class="grid grid-kpi" id="vfdResultKpis" style="margin-top:6px;"></div>
+        </div>
+
+        <div class="card" style="margin-top:16px;">
+          <div class="card-title">Multiple Frequency Analysis <small>30 / 35 / 40 / 45 / 50 / 60 Hz</small></div>
+          <div class="chart-box tall"><canvas id="chartVfdFreq"></canvas></div>
+        </div>
+
+        <div class="grid grid-2" style="margin-top:16px;">
+          <div class="card">
+            <div class="card-title">Energy Saving <small>50 Hz vs current VFD frequency</small></div>
+            <div class="grid grid-kpi" id="vfdSavingKpis"></div>
+          </div>
+          <div class="card">
+            <div class="card-title">Optimum Frequency Recommendation</div>
+            <div id="vfdRecommendation"></div>
+          </div>
+        </div>
+      </section>
+
       <!-- ---------------- CHARTS ---------------- -->
       <section class="view" data-view="charts">
         <div class="tabs" id="chartTabs">
@@ -599,6 +698,24 @@ html[data-theme="light"] .equation{background:rgba(0,0,0,0.05); color:#B5490A;}
             <div class="settings-row"><div><div class="label">Gravitational Acceleration</div><div class="desc">Standard g used in all calculations</div></div><div>9.80665 m/s²</div></div>
             <div class="settings-row"><div><div class="label">Clear all local data</div><div class="desc">Removes saved projects &amp; scenarios from this browser</div></div><button class="btn btn-sm" id="clearData">Clear</button></div>
           </div>
+        </div>
+
+        <div class="card" style="margin-top:16px;">
+          <div class="card-title">Project Design Criteria <small>drives all velocity checks &amp; recommendations project-wide</small></div>
+          <div class="field-row">
+            <div class="field"><label>Velocity Standard</label>
+              <select class="select" id="velocityTemplate">
+                <option value="Water Distribution">Water Distribution (0.9 – 3.0 m/s)</option>
+                <option value="Cooling Water">Cooling Water (1.0 – 2.5 m/s)</option>
+                <option value="Fire Water">Fire Water (1.5 – 4.5 m/s)</option>
+                <option value="Food & Beverage">Food &amp; Beverage (0.6 – 1.5 m/s)</option>
+                <option value="Custom">Custom — User Defined</option>
+              </select>
+            </div>
+            <div class="field"><label>Min Velocity (m/s)</label><input class="input" id="velMinInput" type="number" step="any" value="0.9"></div>
+            <div class="field"><label>Max Velocity (m/s)</label><input class="input" id="velMaxInput" type="number" step="any" value="3.0"></div>
+          </div>
+          <div class="hint">Every velocity PASS/WARNING/FAIL check, oversized/undersized segment recommendation, and the automatic pipe size recommendation tool all use this range. Editing Min or Max directly switches the standard to Custom.</div>
         </div>
       </section>
 
@@ -813,6 +930,70 @@ class PipeDatabase{
 }
 
 /* ==========================================================================
+   IS 1239 (PART 1) : 2004 STEEL TUBE DATABASE — Light / Medium / Heavy classes
+   Source: IS 1239 (Part 1):2004, Tables 3, 4 and 5 (nominal bore, outside
+   diameter, wall thickness, mass per metre). Light class is only defined up
+   to 100 mm nominal bore per the standard; Medium/Heavy extend to 150 mm.
+   ========================================================================== */
+class Is1239Database{
+  constructor(){
+    // {nb: nominal bore mm, od: outside diameter mm (Table max), t: wall thickness mm, massPlain: kg/m}
+    this.light=[
+      {nb:6, od:10.1, t:1.8, massPlain:0.360},{nb:8, od:13.6, t:1.8, massPlain:0.515},
+      {nb:10, od:17.1, t:1.8, massPlain:0.670},{nb:15, od:21.4, t:2.0, massPlain:0.947},
+      {nb:20, od:26.9, t:2.3, massPlain:1.38},{nb:25, od:33.8, t:2.6, massPlain:1.98},
+      {nb:32, od:42.5, t:2.6, massPlain:2.54},{nb:40, od:48.4, t:2.9, massPlain:3.23},
+      {nb:50, od:60.2, t:2.9, massPlain:4.08},{nb:65, od:76.0, t:3.2, massPlain:5.71},
+      {nb:80, od:88.7, t:3.2, massPlain:6.72},{nb:100, od:113.9, t:3.6, massPlain:9.75}
+    ];
+    this.medium=[
+      {nb:6, od:10.6, t:2.0, massPlain:0.404},{nb:8, od:14.0, t:2.3, massPlain:0.641},
+      {nb:10, od:17.5, t:2.3, massPlain:0.839},{nb:15, od:21.8, t:2.6, massPlain:1.21},
+      {nb:20, od:27.3, t:2.6, massPlain:1.56},{nb:25, od:34.2, t:3.2, massPlain:2.41},
+      {nb:32, od:42.9, t:3.2, massPlain:3.10},{nb:40, od:48.8, t:3.2, massPlain:3.56},
+      {nb:50, od:60.8, t:3.6, massPlain:5.03},{nb:65, od:76.6, t:3.6, massPlain:6.42},
+      {nb:80, od:89.5, t:4.0, massPlain:8.36},{nb:100, od:115.0, t:4.5, massPlain:12.2},
+      {nb:125, od:140.8, t:4.8, massPlain:15.9},{nb:150, od:166.5, t:4.8, massPlain:18.9}
+    ];
+    this.heavy=[
+      {nb:6, od:10.5, t:2.6, massPlain:0.487},{nb:8, od:14.0, t:2.9, massPlain:0.765},
+      {nb:10, od:17.5, t:2.9, massPlain:1.02},{nb:15, od:21.8, t:3.2, massPlain:1.44},
+      {nb:20, od:27.3, t:3.2, massPlain:1.87},{nb:25, od:34.2, t:4.0, massPlain:2.93},
+      {nb:32, od:42.9, t:4.0, massPlain:3.79},{nb:40, od:48.8, t:4.0, massPlain:4.37},
+      {nb:50, od:60.8, t:4.5, massPlain:6.19},{nb:65, od:76.6, t:4.5, massPlain:7.93},
+      {nb:80, od:89.5, t:4.8, massPlain:9.90},{nb:100, od:115.0, t:5.4, massPlain:14.5},
+      {nb:125, od:140.8, t:5.4, massPlain:17.9},{nb:150, od:166.5, t:5.4, massPlain:21.3}
+    ];
+  }
+  table(cls){ return cls==='Light'? this.light : cls==='Heavy'? this.heavy : this.medium; }
+  row(cls, idx){ return this.table(cls)[idx]; }
+  dims(cls, idx){
+    const r=this.row(cls, idx);
+    return {od:r.od, wall:r.t, id:r.od-2*r.t, massPlain:r.massPlain};
+  }
+}
+
+/* ==========================================================================
+   PPR (Polypropylene Random Copolymer) PIPE DATABASE — EN ISO 15874 / DIN 8077
+   PN class maps to a Standard Dimension Ratio (SDR); wall thickness = OD/SDR.
+   This is the standard governing relationship — always confirm exact
+   certified wall thickness against the specific manufacturer's datasheet,
+   since real products round to fixed manufactured thicknesses.
+   ========================================================================== */
+class PprDatabase{
+  constructor(){
+    this.sizes=[20,25,32,40,50,63,75,90,110,125,140,160]; // mm, outside diameter
+    this.sdrByClass={'PN10':17,'PN16':11,'PN20':7.4,'PN25':6};
+  }
+  classNames(){ return Object.keys(this.sdrByClass); }
+  dims(odMm, pnClass){
+    const sdr=this.sdrByClass[pnClass]||11;
+    const wall=odMm/sdr;
+    return {od:odMm, wall, id:odMm-2*wall};
+  }
+}
+
+/* ==========================================================================
    FLUID DATABASE  +  WATER PROPERTY ENGINE
    ========================================================================== */
 class WaterPropertyEngine{
@@ -860,7 +1041,10 @@ class FluidDatabase{
       'Hydraulic Oil ISO VG 100':{density:880, viscosity:100},
       'Hydraulic Oil ISO VG 150':{density:885, viscosity:150},
       'Hydraulic Oil ISO VG 220':{density:890, viscosity:220},
-      'Diesel':{density:832, viscosity:3.5},
+      // Diesel grades per comparative technical specification sheet (BIS IS 1460/IS 15770, ASTM D975, reference @ 20°C)
+      'High-Speed Diesel (HSD / No. 2)':{density:835, viscosity:2.50, specificHeat:2000, thermalConductivity:0.130, vaporPressure_kPa:0.05},
+      'Light Diesel Oil (LDO / No. 1)':{density:810, viscosity:1.46, specificHeat:2050, thermalConductivity:0.135, vaporPressure_kPa:0.15},
+      'Heavy Diesel / Fuel Oil (No. 4 / HFO)':{density:950, viscosity:190.0, specificHeat:1850, thermalConductivity:0.125, vaporPressure_kPa:0.01},
       'Light Oil':{density:850, viscosity:10},
       'Heavy Oil':{density:920, viscosity:200},
       'Ethylene Glycol':{density:1113, viscosity:16.1},
@@ -882,7 +1066,13 @@ class FluidDatabase{
       return {density:d, viscosity_cP:v, viscosity_Pas:v/1000, extra:null};
     }
     const f=this.fluids[name];
-    return {density:f.density, viscosity_cP:f.viscosity, viscosity_Pas:f.viscosity/1000, extra:null};
+    const viscosity_Pas=f.viscosity/1000;
+    let extra=null;
+    if(f.specificHeat!=null && f.thermalConductivity!=null){
+      const prandtl=(viscosity_Pas*f.specificHeat)/f.thermalConductivity;
+      extra={specificHeat:f.specificHeat, thermalConductivity:f.thermalConductivity, prandtl, vaporPressure_kPa:f.vaporPressure_kPa};
+    }
+    return {density:f.density, viscosity_cP:f.viscosity, viscosity_Pas, extra};
   }
 }
 
@@ -927,7 +1117,15 @@ class MinorLossCalculator{
       'Tee – Through Run':0.6,'Tee – Branch Flow':1.8,'Wye – 45° Branch':0.8,
       'Gate Valve (Open)':0.2,'Globe Valve (Open)':10.0,'Angle Valve (Open)':2.0,
       'Ball Valve (Open)':0.1,'Butterfly Valve (Open)':0.3,'Check Valve – Swing':2.0,
-      'Check Valve – Lift':12.0,'Union / Coupling':0.08,'Strainer / Y-type':1.5
+      'Check Valve – Lift':12.0,'Union / Coupling':0.08,
+      // Strainer Database (Upgrade 15) — typical published K-values by type and condition.
+      // Real strainer loss depends heavily on mesh size, dirt loading, and manufacturer — these are
+      // reasonable starting points; use the K Override field for a manufacturer-specific value.
+      'Y-Strainer (Clean)':1.5,'Y-Strainer (Dirty)':3.5,
+      'Basket Strainer (Clean)':1.2,'Basket Strainer (Dirty)':3.0,
+      'Duplex Strainer (Clean)':1.0,'Duplex Strainer (Dirty)':2.5,
+      'T-Strainer (Clean)':1.8,'T-Strainer (Dirty)':4.0,
+      'In-Line Strainer (Clean)':0.8,'In-Line Strainer (Dirty)':2.0
     };
   }
   names(){return Object.keys(this.kValues);}
@@ -961,11 +1159,11 @@ class CavitationAnalyzer{
    VALIDATION ENGINE
    ========================================================================== */
 class ValidationEngine{
-  static velocityCheck(name, v, fluidIsGas){
-    const lo = fluidIsGas? 5: 0.9, hi = fluidIsGas? 25: 3.0, hardHi=fluidIsGas?40:6.0;
+  static velocityCheck(name, v, vMin, vMax){
+    const hardHi = vMax*2.0;
     if(v>hardHi) return {status:'FAIL', msg:`${name}: velocity ${v.toFixed(2)} m/s dangerously high — risk of erosion/water hammer.`};
-    if(v<lo || v>hi) return {status:'WARNING', msg:`${name}: velocity ${v.toFixed(2)} m/s outside typical recommended range (${lo}–${hi} m/s).`};
-    return {status:'PASS', msg:`${name}: velocity ${v.toFixed(2)} m/s within recommended range (${lo}–${hi} m/s).`};
+    if(v<vMin || v>vMax) return {status:'WARNING', msg:`${name}: velocity ${v.toFixed(2)} m/s outside the project design range (${vMin}–${vMax} m/s).`};
+    return {status:'PASS', msg:`${name}: velocity ${v.toFixed(2)} m/s within the project design range (${vMin}–${vMax} m/s).`};
   }
   static reynoldsCheck(name, re){
     if(re<2300) return {status:'PASS', msg:`${name}: Re = ${re.toFixed(0)} — laminar flow.`};
@@ -1027,16 +1225,51 @@ class RecommendationEngine{
 class PipelineCalculator{
   constructor(app){ this.app=app; this.g=9.80665; }
 
+  /** Resolve a segment's OD/wall/ID from whichever pipe standard it uses, honoring a manual thickness override if set. */
+  resolveSegmentDims(seg){
+    const standard = seg.pipeStandard || 'ASME';
+    // Pre-existing "direct custom diameter" mode: the entered value IS the bore/ID directly.
+    if(standard==='custom' || seg.schedule==='custom' || seg.npsIndex==='custom'){
+      const idMm=seg.customDiaMm;
+      return {od:idMm, wall:null, idMm, massPlain:null, fellBack:false, usedSchedule:null};
+    }
+    let od, wall, massPlain=null, fellBack=false, usedSchedule=null;
+    if(standard==='IS1239'){
+      const d=this.app.is1239Db.dims(seg.is1239Class||'Medium', seg.is1239Index||0);
+      od=d.od; wall=d.wall; massPlain=d.massPlain;
+    } else if(standard==='PPR'){
+      const sizeMm=this.app.pprDb.sizes[seg.pprSizeIndex!=null?seg.pprSizeIndex:0];
+      const d=this.app.pprDb.dims(sizeMm, seg.pprClass||'PN16');
+      od=d.od; wall=d.wall;
+    } else {
+      // ASME B36.10 (default)
+      const sch = seg.schedule==='XXS' ? 'XXS' : parseInt(seg.schedule);
+      const r=this.app.pipeDb.idFor(seg.npsIndex, sch);
+      od=r.od; wall=r.wall; fellBack=r.fellBack; usedSchedule=r.usedSchedule;
+    }
+    if(seg.customThicknessOverride && seg.customThicknessMm!=null && seg.customThicknessMm>0){
+      wall = seg.customThicknessMm;
+    }
+    const idMm = Math.max(od - 2*wall, 0.1);
+    return {od, wall, idMm, massPlain, fellBack, usedSchedule};
+  }
   segmentGeometry(seg){
-    let idMm;
-    if(seg.schedule==='custom' || seg.npsIndex==='custom'){ idMm = seg.customDiaMm; }
-    else { const sch = seg.schedule==='XXS' ? 'XXS' : parseInt(seg.schedule); idMm = this.app.pipeDb.idFor(seg.npsIndex, sch).id; }
-    const D = idMm/1000;
+    const dims=this.resolveSegmentDims(seg);
+    const D = dims.idMm/1000;
     const area = Math.PI/4*D*D;
-    return {D, area, idMm};
+    return {D, area, idMm:dims.idMm, od:dims.od, wall:dims.wall};
   }
   sizeLabel(seg){
-    if(seg.schedule==='custom' || seg.npsIndex==='custom') return `Custom ${seg.customDiaMm.toFixed(0)}mm`;
+    const standard = seg.pipeStandard || 'ASME';
+    if(standard==='custom' || seg.schedule==='custom' || seg.npsIndex==='custom') return `Custom ${seg.customDiaMm.toFixed(0)}mm`;
+    if(standard==='IS1239'){
+      const r=this.app.is1239Db.row(seg.is1239Class||'Medium', seg.is1239Index||0);
+      return `IS1239 NB${r.nb} (${seg.is1239Class||'Medium'})`;
+    }
+    if(standard==='PPR'){
+      const sizeMm=this.app.pprDb.sizes[seg.pprSizeIndex!=null?seg.pprSizeIndex:0];
+      return `PPR ${sizeMm}mm (${seg.pprClass||'PN16'})`;
+    }
     return this.app.pipeDb.nps[seg.npsIndex]?.label || '?';
   }
   /** Resolve the actual flow (m3/s) through a given segment: its own manual override if set, otherwise the pipeline's shared flow rate. */
@@ -1102,7 +1335,7 @@ class PipelineCalculator{
         const majorLossM=f*(item.lengthM/geo.D)*(V*V)/(2*g);
         const frictionPa=rho*g*majorLossM;
         const elevPa=rho*g*item.elevationM;
-        segResults.push({id:item.id, name:item.name, sizeLabel:this.sizeLabel(item), idMm:geo.idMm, D:geo.D, area:geo.area,
+        segResults.push({id:item.id, name:item.name, sizeLabel:this.sizeLabel(item), idMm:geo.idMm, D:geo.D, area:geo.area, odMm:geo.od, wallMm:geo.wall,
           Q_m3s:Qseg, flowMode:item.flowMode||'global', V, re, regime, f, majorLossM, frictionPa, lengthM:item.lengthM, elevationM:item.elevationM, elevPa});
         cumFrictionHeadM += majorLossM;
         cumElevationM += item.elevationM;
@@ -1177,6 +1410,82 @@ class PipelineCalculator{
 }
 
 /* ==========================================================================
+   PUMP ENGINE — pump curve storage, interpolation, affinity laws (VFD),
+   operating-point / BEP detection, and duty validation.
+   All curve data is manually entered (or CSV-imported) point pairs; this
+   engine works purely on arrays of {Q,H,Eff,P,NPSHr} points, independent of
+   how they got there.
+   ========================================================================== */
+class PumpEngine{
+  /** Piecewise-linear interpolation of `key` at flow Q (m3/h) over a points array sorted by Q ascending.
+      Flat extrapolation beyond the entered range (holds the nearest end value) rather than guessing. */
+  static interp(points, Q, key){
+    if(!points || points.length===0) return null;
+    const sorted=[...points].sort((a,b)=>a.Q-b.Q);
+    if(Q<=sorted[0].Q) return sorted[0][key];
+    if(Q>=sorted[sorted.length-1].Q) return sorted[sorted.length-1][key];
+    for(let i=0;i<sorted.length-1;i++){
+      const a=sorted[i], b=sorted[i+1];
+      if(Q>=a.Q && Q<=b.Q){
+        if(b.Q===a.Q) return a[key];
+        const t=(Q-a.Q)/(b.Q-a.Q);
+        return a[key]+t*(b[key]-a[key]);
+      }
+    }
+    return sorted[sorted.length-1][key];
+  }
+  /** Scale an entire point set to a new frequency via the affinity laws: Q∝N, H∝N², P∝N³. Efficiency is
+      conventionally treated as unchanged at the corresponding (scaled) point on the affinity-law parabola. */
+  static scaleToFrequency(points, ratedHz, targetHz){
+    const r = targetHz/ratedHz;
+    return points.map(p=>({Q:p.Q*r, H:p.H*r*r, Eff:p.Eff, P:p.P*r*r*r, NPSHr: p.NPSHr!=null? p.NPSHr*r*r : null}));
+  }
+  /** Find where a pump curve (points) intersects a system-curve function sysHeadFn(Q_m3h)->head_m.
+      Scans left-to-right for a sign change in (pumpHead-sysHead) then linearly refines the crossing. */
+  static findIntersection(points, sysHeadFn, qMaxM3h){
+    if(!points || points.length<2) return null;
+    const N=200;
+    let prevQ=0, prevDiff=this.interp(points,0,'H')-sysHeadFn(0);
+    for(let i=1;i<=N;i++){
+      const q=qMaxM3h*i/N;
+      const diff=this.interp(points,q,'H')-sysHeadFn(q);
+      if(prevDiff!=null && diff!=null && ((prevDiff>=0 && diff<0)||(prevDiff<=0 && diff>0)) && prevDiff!==diff){
+        const t = prevDiff/(prevDiff-diff);
+        const qCross = prevQ + t*(q-prevQ);
+        return {
+          Q: qCross,
+          H: this.interp(points, qCross, 'H'),
+          Eff: this.interp(points, qCross, 'Eff'),
+          P: this.interp(points, qCross, 'P'),
+          NPSHr: this.interp(points, qCross, 'NPSHr')
+        };
+      }
+      prevQ=q; prevDiff=diff;
+    }
+    return null; // curves never cross within the scanned range
+  }
+  /** Best Efficiency Point: the entered point with the highest efficiency value. */
+  static bep(points){
+    if(!points || points.length===0) return null;
+    return points.reduce((best,p)=> (best==null || p.Eff>best.Eff) ? p : best, null);
+  }
+  /** Compare a required duty point against the pump curve's actual capability at that flow. */
+  static validateDuty(points, requiredQ_m3h, requiredH_m){
+    if(!points || points.length<2) return {status:'INFO', msg:'Enter at least two pump curve points to validate against the required duty point.'};
+    const availableH = this.interp(points, requiredQ_m3h, 'H');
+    const bepPoint = this.bep(points);
+    const distFromBepPct = bepPoint ? 100*Math.abs(requiredQ_m3h-bepPoint.Q)/Math.max(bepPoint.Q,0.001) : null;
+    if(availableH < requiredH_m){
+      return {status:'FAIL', msg:`Required head (${requiredH_m.toFixed(2)} m) exceeds available pump head (${availableH.toFixed(2)} m) at the required flow (${requiredQ_m3h.toFixed(1)} m³/h).`, distFromBepPct};
+    }
+    if(distFromBepPct!=null && distFromBepPct>30){
+      return {status:'WARNING', msg:`Pump satisfies the required duty, but operates ${distFromBepPct.toFixed(0)}% away from its Best Efficiency Point flow — expect reduced efficiency and higher wear.`, distFromBepPct};
+    }
+    return {status:'PASS', msg:`Uploaded pump curve satisfies the required flow and head, ${distFromBepPct!=null?distFromBepPct.toFixed(0)+'% from BEP.':''}`, distFromBepPct};
+  }
+}
+
+/* ==========================================================================
    CHART MANAGER
    ========================================================================== */
 class ChartManager{
@@ -1234,7 +1543,7 @@ class ReportGenerator{
     const summarySentence = res.isGravityAssisted
       ? `The elevation drop supplies ${fmt(app.units.paToDisplay(res.gravityAssistancePa),2)} ${u.press} of gravity-assisted driving pressure, exceeding the friction and static requirements — a net available pressure of ${fmt(app.units.paToDisplay(res.netAvailablePressurePa),2)} ${u.press} remains, so no pump is required.`
       : `The computed friction pressure drop is ${fmt(app.units.paToDisplay(res.frictionPressureDropPa),2)} ${u.press}, with a total required pressure (friction + elevation + static) of ${fmt(app.units.paToDisplay(res.totalRequiredPressurePa),2)} ${u.press}.`;
-    const segRows = res.segResults.map(s=>`<tr><td>${s.name}</td><td>${s.sizeLabel}</td><td>${(s.Q_m3s*3600).toFixed(2)} m³/h${s.flowMode!=='global'?' (manual)':''}</td><td>${fmt(s.V,3)} m/s</td><td>${s.re.toFixed(0)} (${s.regime})</td><td>${fmt(s.f,5)}</td><td>${fmt(s.majorLossM,3)} m</td><td>${fmt(s.frictionPa/1000,3)} kPa</td></tr>`).join('');
+    const segRows = res.segResults.map(s=>`<tr><td>${s.name}</td><td>${s.sizeLabel}</td><td>${fmt(s.odMm,2)} / ${s.wallMm!=null?fmt(s.wallMm,2):'—'} / ${fmt(s.idMm,2)}</td><td>${(s.Q_m3s*3600).toFixed(2)} m³/h${s.flowMode!=='global'?' (manual)':''}</td><td>${fmt(s.V,3)} m/s</td><td>${s.re.toFixed(0)} (${s.regime})</td><td>${fmt(s.f,5)}</td><td>${fmt(s.majorLossM,3)} m</td><td>${fmt(s.frictionPa/1000,3)} kPa</td></tr>`).join('');
     const fitRows = res.fitResults.map(fi=>`<tr><td>${fi.name}</td><td>${fi.K!=null?fmt(fi.K,3):'—'}</td><td>${fmt(fi.headLossM,3)} m</td><td>${fmt(fi.pa/1000,3)} kPa</td></tr>`).join('');
     const breakdownRows = breakdown.map(b=>`<tr><td>${b.name}</td><td>${fmt(b.pa/1000,3)} kPa</td><td>${fmt(b.pct,1)}%</td></tr>`).join('');
     return `
@@ -1245,7 +1554,7 @@ class ReportGenerator{
       ${res.segResults.length} pipe segment(s) totaling ${fmt(res.cumLengthM,1)} m in length, conveying ${ctx.fluidName} at
       ${fmt(app.units.cToDisplay(ctx.tempC),1)} ${u.temp}. ${summarySentence}</p>
       <h2>2. Pipeline Segments</h2>
-      <table><tr><th>Segment</th><th>Size</th><th>Flow</th><th>Velocity</th><th>Reynolds</th><th>f</th><th>Major Loss</th><th>Friction ΔP</th></tr>${segRows}</table>
+      <table><tr><th>Segment</th><th>Size</th><th>OD/Wall/ID (mm)</th><th>Flow</th><th>Velocity</th><th>Reynolds</th><th>f</th><th>Major Loss</th><th>Friction ΔP</th></tr>${segRows}</table>
       <h2>3. Fittings</h2>
       <table><tr><th>Fitting</th><th>K</th><th>Minor Loss</th><th>ΔP</th></tr>${fitRows||'<tr><td colspan="4">No fittings added.</td></tr>'}</table>
       <h2>4. Governing Equations</h2>
@@ -1304,6 +1613,8 @@ class PressureDropApp{
     this.storage=new StorageManager('pd');
     this.units=new UnitConverter();
     this.pipeDb=new PipeDatabase();
+    this.is1239Db=new Is1239Database();
+    this.pprDb=new PprDatabase();
     this.fluidDb=new FluidDatabase();
     this.minorDb=new MinorLossCalculator();
     this.calc=new PipelineCalculator(this);
@@ -1312,13 +1623,23 @@ class PressureDropApp{
     this.pipeline=[]; // ordered array of {type:'segment'|'fitting', ...}
     this._nextId=1;
     this.currentChartTab='profile';
-    this.views=['dashboard','pipeline','fluidEnergy','results','lossBreakdown','charts','reports','library','settings','projects'];
+    this.pumpCurvePoints=[]; // manually-entered {Q(m3/h),H(m),Eff(%),P(kW),NPSHr(m)} pump curve points
+    this.velocityTemplates={
+      'Water Distribution':{vMin:0.9, vMax:3.0},
+      'Cooling Water':{vMin:1.0, vMax:2.5},
+      'Fire Water':{vMin:1.5, vMax:4.5},
+      'Food & Beverage':{vMin:0.6, vMax:1.5},
+      'Custom':{vMin:0.9, vMax:3.0}
+    };
+    this.designCriteria={template:'Water Distribution', vMin:0.9, vMax:3.0};
+    this.views=['dashboard','pipeline','fluidEnergy','results','lossBreakdown','pumpEng','charts','reports','library','settings','projects'];
     this.viewMeta={
       dashboard:['Dashboard','Overview of the current pipeline'],
       pipeline:['Pipeline Layout','Build pipe segments and fittings in sequence'],
       fluidEnergy:['Fluid & Energy','Fluid properties, flow rate, pump and energy inputs'],
       results:['Results','Full calculation output'],
       lossBreakdown:['Loss Breakdown','Ranked pressure loss contributors'],
+      pumpEng:['Pump Engineering','Pump curve, operating point, BEP and VFD analysis'],
       charts:['Charts','Visual analysis'],
       reports:['Reports','Export a formal calculation report'],
       library:['Engineering Library','Reference equations and standards'],
@@ -1340,13 +1661,14 @@ class PressureDropApp{
     this.bindReportsView();
     this.bindSettingsView();
     this.bindProjectsView();
+    this.bindPumpEngView();
     this.buildLibrary();
     this.recalculate();
   }
 
   /* ---------------- NAVIGATION ---------------- */
   buildNav(){
-    const icons={dashboard:'📊',pipeline:'🧱',fluidEnergy:'💧',results:'📈',lossBreakdown:'🏆',charts:'📉',reports:'📄',library:'📚',settings:'⚙️',projects:'🗂️'};
+    const icons={dashboard:'📊',pipeline:'🧱',fluidEnergy:'💧',results:'📈',lossBreakdown:'🏆',pumpEng:'⚡',charts:'📉',reports:'📄',library:'📚',settings:'⚙️',projects:'🗂️'};
     const nav=this.el('navList');
     nav.innerHTML='';
     this.views.forEach(v=>{
@@ -1373,6 +1695,7 @@ class PressureDropApp{
     this.recalculate();
     if(v==='charts') this.renderChartTab(this.currentChartTab);
     if(v==='lossBreakdown' && this.lastResult) this._renderPieOn('chartLossBreakdown', this.lastResult);
+    if(v==='pumpEng' && this.lastResult) this.renderPumpEngineering(this.lastResult);
     if(v==='reports') this.renderReport();
     if(v==='projects') this.renderProjects();
   }
@@ -1426,7 +1749,8 @@ class PressureDropApp{
      ================================================================ */
   bindPipelineView(){
     this.el('addSegmentBtn').addEventListener('click',()=>{
-      this.pipeline.push({id:this.newId(), type:'segment', name:'New Segment', npsIndex:9, schedule:'40', customDiaMm:100,
+      this.pipeline.push({id:this.newId(), type:'segment', name:'New Segment', pipeStandard:'ASME', npsIndex:9, schedule:'40', customDiaMm:100,
+        is1239Class:'Medium', is1239Index:0, pprClass:'PN16', pprSizeIndex:0, customThicknessOverride:false, customThicknessMm:0,
         material:'Commercial Steel', roughnessMm:this.pipeDb.roughness('Commercial Steel'), lengthM:50, elevationM:0,
         flowMode:'global', flowValueM3h:0, flowValueKgs:0});
       this.renderPipelineList(); this.recalculate();
@@ -1439,6 +1763,10 @@ class PressureDropApp{
       if(confirm('Clear the entire pipeline layout?')){ this.pipeline=[]; this.renderPipelineList(); this.recalculate(); }
     });
     this.el('pipeStaticP').addEventListener('input',()=>this.recalculate());
+    this.el('sizeRecMaterial').innerHTML = this.pipeDb.materialNames().map(m=>`<option value="${m}">${m}</option>`).join('');
+    this.el('sizeRecMaterial').value='Commercial Steel';
+    this.el('sizeRecFlow').addEventListener('input',()=>this.recalculate());
+    this.el('sizeRecMaterial').addEventListener('change',()=>this.recalculate());
     this.renderPipelineList();
   }
 
@@ -1452,9 +1780,12 @@ class PressureDropApp{
     const matOptions=this.pipeDb.materialNames().map(m=>`<option value="${m}">${m}</option>`).join('');
     const simpleFittingOptions=this.minorDb.names().map(n=>`<option value="${n}">${n} (K=${this.minorDb.kFor(n)})</option>`).join('');
     const transitionOptions=TRANSITION_TYPES.map(t=>`<option value="${t}">${t}</option>`).join('');
+    const is1239NbOptions=(cls)=>this.is1239Db.table(cls).map((r,i)=>`<option value="${i}">NB ${r.nb} mm</option>`).join('');
+    const pprSizeOptions=this.pprDb.sizes.map((s,i)=>`<option value="${i}">${s} mm</option>`).join('');
 
     container.innerHTML = this.pipeline.map((item,idx)=>{
       if(item.type==='segment'){
+        const standard = item.pipeStandard || 'ASME';
         return `
         <div class="pl-item segment" data-id="${item.id}">
           <div class="pl-item-top">
@@ -1467,6 +1798,14 @@ class PressureDropApp{
           </div>
           <div class="pl-fields">
             <div class="field"><label>Name</label><input class="input" data-f="name" value="${item.name}"></div>
+            <div class="field"><label>Pipe Standard</label>
+              <select class="select" data-f="pipeStandard">
+                <option value="ASME" ${standard==='ASME'?'selected':''}>ASME B36.10 / B36.19</option>
+                <option value="IS1239" ${standard==='IS1239'?'selected':''}>IS 1239:2004 (Light/Medium/Heavy)</option>
+                <option value="PPR" ${standard==='PPR'?'selected':''}>PPR (EN ISO 15874)</option>
+              </select>
+            </div>
+            ${standard==='ASME'?`
             <div class="field"><label>NPS</label><select class="select" data-f="npsIndex">${npsOptions}<option value="custom">Custom</option></select></div>
             <div class="field"><label>Schedule</label>
               <select class="select" data-f="schedule">
@@ -1477,7 +1816,41 @@ class PressureDropApp{
                 <option value="custom">Custom Ø</option>
               </select>
             </div>
-            ${item.schedule==='custom'?`<div class="field"><label>Diameter (mm)</label><input class="input" data-f="customDiaMm" type="number" value="${item.customDiaMm}"></div>`:''}
+            ${item.schedule==='custom'?`<div class="field"><label>Bore / ID (mm)</label><input class="input" data-f="customDiaMm" type="number" value="${item.customDiaMm}"></div>`:''}
+            ` : standard==='IS1239'?`
+            <div class="field"><label>Class</label>
+              <select class="select" data-f="is1239Class">
+                <option value="Light" ${item.is1239Class==='Light'?'selected':''}>Light</option>
+                <option value="Medium" ${(!item.is1239Class||item.is1239Class==='Medium')?'selected':''}>Medium</option>
+                <option value="Heavy" ${item.is1239Class==='Heavy'?'selected':''}>Heavy</option>
+              </select>
+            </div>
+            <div class="field"><label>Nominal Bore</label><select class="select" data-f="is1239Index">${is1239NbOptions(item.is1239Class||'Medium')}</select></div>
+            ` : `
+            <div class="field"><label>PN Class</label>
+              <select class="select" data-f="pprClass">
+                <option value="PN10" ${item.pprClass==='PN10'?'selected':''}>PN10</option>
+                <option value="PN16" ${(!item.pprClass||item.pprClass==='PN16')?'selected':''}>PN16</option>
+                <option value="PN20" ${item.pprClass==='PN20'?'selected':''}>PN20</option>
+                <option value="PN25" ${item.pprClass==='PN25'?'selected':''}>PN25</option>
+              </select>
+            </div>
+            <div class="field"><label>Nominal Size</label><select class="select" data-f="pprSizeIndex">${pprSizeOptions}</select></div>
+            `}
+            <div class="field" style="min-width:170px;">
+              <label><input type="checkbox" data-f="customThicknessOverride" ${item.customThicknessOverride?'checked':''}> Custom Thickness</label>
+              ${item.customThicknessOverride?`<input class="input" data-f="customThicknessMm" type="number" step="any" placeholder="mm" value="${item.customThicknessMm??''}" style="margin-top:6px;">`:''}
+            </div>
+            <div class="field"><label>OD / Wall / ID <small style="font-weight:400;">(auto)</small></label>
+              <div class="input" data-dims="${item.id}" style="font-weight:700; display:flex; align-items:center; font-size:12px;">— / — / — mm</div>
+            </div>
+            <div class="field"><label>Reynolds No. <small style="font-weight:400;">(auto)</small></label>
+              <div class="input" data-re="${item.id}" style="font-weight:700; display:flex; align-items:center; font-size:12px;">—</div>
+            </div>
+            <div class="field"><label>Friction ΔP <small style="font-weight:400;">(auto)</small></label>
+              <div class="input" data-dp="${item.id}" style="font-weight:700; display:flex; align-items:center; font-size:12px;">—</div>
+            </div>
+            ${standard!=='ASME'||item.schedule!=='custom'?'':''}
             <div class="field"><label>Material</label><select class="select" data-f="material">${matOptions}</select></div>
             <div class="field"><label>Length (m)</label><input class="input" data-f="lengthM" type="number" step="any" value="${item.lengthM}"></div>
             <div class="field"><label>Flow in this Pipe</label>
@@ -1540,8 +1913,18 @@ class PressureDropApp{
       const row=container.querySelector(`[data-id="${item.id}"]`);
       if(!row) return;
       if(item.type==='segment'){
-        row.querySelector('[data-f="npsIndex"]').value=item.npsIndex;
-        row.querySelector('[data-f="schedule"]').value=item.schedule;
+        const standard = item.pipeStandard || 'ASME';
+        row.querySelector('[data-f="pipeStandard"]').value=standard;
+        if(standard==='ASME'){
+          row.querySelector('[data-f="npsIndex"]').value=item.npsIndex;
+          row.querySelector('[data-f="schedule"]').value=item.schedule;
+        } else if(standard==='IS1239'){
+          row.querySelector('[data-f="is1239Class"]').value=item.is1239Class||'Medium';
+          row.querySelector('[data-f="is1239Index"]').value=item.is1239Index||0;
+        } else if(standard==='PPR'){
+          row.querySelector('[data-f="pprClass"]').value=item.pprClass||'PN16';
+          row.querySelector('[data-f="pprSizeIndex"]').value=item.pprSizeIndex||0;
+        }
         row.querySelector('[data-f="material"]').value=item.material;
       } else if(item.category!=='custom'){
         const subSel=row.querySelector('[data-f="subtype"]');
@@ -1569,17 +1952,20 @@ class PressureDropApp{
       const id=input.closest('.pl-item').dataset.id;
       const field=input.dataset.f;
       const item=this.pipeline.find(p=>p.id===id);
-      const isStructural = field==='schedule' || field==='category' || field==='flowMode' || field==='npsIndex';
-      const evt = (input.tagName==='SELECT') ? 'change' : 'input';
+      const isStructural = ['schedule','category','flowMode','npsIndex','pipeStandard','is1239Class','customThicknessOverride'].includes(field);
+      const isCheckbox = input.type==='checkbox';
+      const evt = (input.tagName==='SELECT') ? 'change' : isCheckbox ? 'change' : 'input';
       input.addEventListener(evt, ()=>{
-        let v=input.value;
+        let v = isCheckbox ? input.checked : input.value;
         if(field==='npsIndex') v = v==='custom' ? 'custom' : parseInt(v);
-        else if(['lengthM','elevationM','roughnessMm','customDiaMm','customK','flowValueM3h','flowValueKgs'].includes(field)) v=parseFloat(v)||0;
+        else if(['lengthM','elevationM','roughnessMm','customDiaMm','customK','flowValueM3h','flowValueKgs','customThicknessMm'].includes(field)) v=parseFloat(v)||0;
+        else if(['is1239Index','pprSizeIndex'].includes(field)) v=parseInt(v)||0;
         else if(field==='qty') v=Math.max(1,parseInt(v)||1);
         else if(field==='kOverride') v = v===''? null : parseFloat(v);
         item[field]=v;
         if(field==='material'){ item.roughnessMm=this.pipeDb.roughness(v); }
         if(field==='npsIndex' && v==='custom'){ item.schedule='custom'; }
+        if(field==='is1239Class'){ item.is1239Index=0; } // reset size pick when class changes (Light stops at NB100)
         if(field==='category'){
           if(v==='transition'){ item.subtype=TRANSITION_TYPES[0]; }
           else if(v==='simple'){ item.subtype=this.minorDb.names()[3]; }
@@ -1647,11 +2033,13 @@ class PressureDropApp{
   buildValidation(res){
     const ctx=this.lastCtx;
     const isGas = ctx.fluidName==='Air'||ctx.fluidName==='Natural Gas'||ctx.fluidName==='Steam';
+    const {vMin, vMax}=this.designCriteria;
     const checks=[];
     res.segResults.forEach(s=>{
-      checks.push(ValidationEngine.velocityCheck(s.name, s.V, isGas));
+      checks.push(ValidationEngine.velocityCheck(s.name, s.V, vMin, vMax));
       checks.push(ValidationEngine.reynoldsCheck(s.name, s.re));
     });
+    if(isGas && vMax<4.5) checks.push({status:'INFO', msg:`The active velocity standard (${this.designCriteria.template}, ${vMin}–${vMax} m/s) is a liquid range but the selected fluid is a gas — gas lines typically run much faster (5–25 m/s). Consider a Custom standard for this fluid.`});
     checks.push(ValidationEngine.pressureDropCheck((res.frictionPressureDropPa/1000)/(Math.max(res.cumLengthM,0.01)/100)));
     checks.push(ValidationEngine.efficiencyCheck(ctx.pumpEff));
     checks.push(ValidationEngine.staticHeadCheck(res.cumElevationM, res.elevationPressurePa));
@@ -1704,10 +2092,9 @@ class PressureDropApp{
     const ctx=this.lastCtx;
     const breakdown=this.buildLossBreakdown(res);
     const topLoss=breakdown[0]||null;
-    const isGas = ctx.fluidName==='Air'||ctx.fluidName==='Natural Gas'||ctx.fluidName==='Steam';
-    const velHigh=isGas?25:3.0, velLow=isGas?5:0.9;
-    const oversizedSegments=res.segResults.filter(s=>s.V>velHigh);
-    const undersizedSegments=res.segResults.filter(s=>s.V<0.5 && s.V>0 && !isGas);
+    const {vMin, vMax}=this.designCriteria;
+    const oversizedSegments=res.segResults.filter(s=>s.V>vMax);
+    const undersizedSegments=res.segResults.filter(s=>s.V<vMin*0.5 && s.V>0);
     const globeValveCount=res.fitResults.filter(f=>f.name.includes('Globe')).reduce((s,f)=>s+f.qty,0);
     const elbowCount=res.fitResults.filter(f=>f.name.includes('Elbow')).reduce((s,f)=>s+f.qty,0);
     const transitionItems=res.fitResults.filter(f=>f.category==='transition');
@@ -1746,11 +2133,16 @@ class PressureDropApp{
     safe(()=>this.renderPumpDutyPoint(res,ctx), 'renderPumpDutyPoint');
     safe(()=>this.renderPipelineResults(res), 'renderPipelineResults');
     safe(()=>this.updateSegmentVelocityBadges(res), 'updateSegmentVelocityBadges');
+    safe(()=>this.updateSegmentDimsBadges(res), 'updateSegmentDimsBadges');
+    safe(()=>this.updateSegmentReDpBadges(res), 'updateSegmentReDpBadges');
     safe(()=>this.renderFlowBalanceAlert(res), 'renderFlowBalanceAlert');
+    safe(()=>this.renderPipeSizeRecommendation(res), 'renderPipeSizeRecommendation');
+    safe(()=>this.renderPipelineDiagram(res), 'renderPipelineDiagram');
     safe(()=>this.renderDashboard(res), 'renderDashboard');
     safe(()=>this.renderResults(res), 'renderResults');
     if(document.querySelector('.view[data-view="charts"]').classList.contains('active')) safe(()=>this.renderChartTab(this.currentChartTab), 'renderChartTab');
     if(document.querySelector('.view[data-view="lossBreakdown"]').classList.contains('active')) safe(()=>this._renderPieOn('chartLossBreakdown', res), 'renderLossBreakdownChart');
+    if(document.querySelector('.view[data-view="pumpEng"]').classList.contains('active')) safe(()=>this.renderPumpEngineering(res), 'renderPumpEngineering');
     if(document.querySelector('.view[data-view="reports"]').classList.contains('active')) safe(()=>this.renderReport(), 'renderReport');
   }
 
@@ -1808,11 +2200,11 @@ class PressureDropApp{
       Deliberately does NOT call renderPipelineList() (a full re-render), so the user's cursor/focus
       in whatever field they're typing in is never interrupted. */
   updateSegmentVelocityBadges(res){
-    const isGas = this.lastCtx && (this.lastCtx.fluidName==='Air'||this.lastCtx.fluidName==='Natural Gas'||this.lastCtx.fluidName==='Steam');
+    const {vMin, vMax}=this.designCriteria;
     res.segResults.forEach(s=>{
       const el=document.querySelector(`[data-vel="${s.id}"]`);
       if(!el) return;
-      const check=ValidationEngine.velocityCheck(s.name, s.V, isGas);
+      const check=ValidationEngine.velocityCheck(s.name, s.V, vMin, vMax);
       const color = check.status==='PASS' ? 'var(--pass)' : check.status==='WARNING' ? 'var(--warn)' : 'var(--fail)';
       el.style.color=color;
       el.textContent = `${s.V.toFixed(3)} m/s`;
@@ -1820,11 +2212,119 @@ class PressureDropApp{
     });
   }
 
+  /** Lightweight per-row update of each segment's live "OD / Wall / ID" readout — Enhancement 4
+      (Automatic Thickness Display). Same non-disruptive pattern as the velocity readout: updates
+      text in place without a full re-render, so it never interrupts what the user is typing. */
+  updateSegmentDimsBadges(res){
+    res.segResults.forEach(s=>{
+      const el=document.querySelector(`[data-dims="${s.id}"]`);
+      if(!el) return;
+      if(s.wallMm==null){
+        el.textContent = `${s.odMm.toFixed(2)} / — / ${s.idMm.toFixed(2)} mm`;
+        el.title = 'Custom bore entered directly — wall thickness not tracked for this mode.';
+      } else {
+        el.textContent = `${s.odMm.toFixed(2)} / ${s.wallMm.toFixed(2)} / ${s.idMm.toFixed(2)} mm`;
+        el.title = 'Outside Diameter / Wall Thickness / Internal Diameter';
+      }
+    });
+  }
+
+  /** Live Reynolds Number and Friction Pressure Drop readouts on each segment card — Upgrade 17. */
+  updateSegmentReDpBadges(res){
+    const u=this.units.labels();
+    res.segResults.forEach(s=>{
+      const reEl=document.querySelector(`[data-re="${s.id}"]`);
+      if(reEl){ reEl.textContent = `${s.re.toFixed(0)} (${s.regime})`; }
+      const dpEl=document.querySelector(`[data-dp="${s.id}"]`);
+      if(dpEl){ dpEl.textContent = `${this.units.paToDisplay(s.frictionPa).toFixed(2)} ${u.press}`; }
+    });
+  }
+
+  /** Automatic Pipe Size Recommendation — Upgrade 4. Sweeps standard NPS sizes (Schedule 40) and
+      reports which ones keep velocity inside the project design range, with an estimated friction
+      loss and a simple relative-cost ranking, for the current (or a manually entered) flow rate. */
+  renderPipeSizeRecommendation(res){
+    const flowInput=this.el('sizeRecFlow');
+    const autoFlowM3h=this.units.m3hFromM3s(res.Q_m3s);
+    flowInput.placeholder=`${autoFlowM3h.toFixed(1)} (auto)`;
+    const flowM3h = flowInput.value!==''? (parseFloat(flowInput.value)||0) : autoFlowM3h;
+    const Q_m3s=flowM3h/3600;
+    const material=this.el('sizeRecMaterial').value||'Commercial Steel';
+    const roughnessMm=this.pipeDb.roughness(material);
+    const {vMin, vMax}=this.designCriteria;
+    this.el('sizeRecRangeDisplay').textContent=`${vMin} – ${vMax} m/s (${this.designCriteria.template})`;
+
+    const rho=res.rho, mu=res.mu, nu=mu/rho, g=9.80665;
+    const frictionMethod=this.lastCtx?this.lastCtx.frictionMethod:'colebrook';
+    const rows=[];
+    this.pipeDb.nps.forEach((sizeRow,i)=>{
+      const dims=this.pipeDb.idFor(i,40);
+      const D=dims.id/1000; if(D<=0) return;
+      const area=Math.PI/4*D*D;
+      const V=Q_m3s/area;
+      const re=ReynoldsCalculator.compute(V,D,nu);
+      const relRough=(roughnessMm/1000)/D;
+      const f=FrictionFactorCalculator.compute(frictionMethod, Math.max(re,1), relRough);
+      const hf100=f*(100/D)*(V*V)/(2*g);
+      const dPkPa100=(rho*g*hf100)/1000;
+      const relCostRaw=dims.od*dims.wall;
+      rows.push({label:sizeRow.label, index:i, V, dPkPa100, relCostRaw, inRange:V>=vMin && V<=vMax});
+    });
+    const sortedByCost=[...rows].sort((a,b)=>a.relCostRaw-b.relCostRaw);
+    sortedByCost.forEach((r,idx)=>{ r.costRank=idx+1; });
+
+    const qualifying=rows.filter(r=>r.inRange).sort((a,b)=>a.index-b.index);
+    const displayRows = qualifying.length? qualifying : [...rows].sort((a,b)=>Math.abs(a.V-(vMin+vMax)/2)-Math.abs(b.V-(vMin+vMax)/2)).slice(0,5).sort((a,b)=>a.index-b.index);
+    this.el('sizeRecTable').innerHTML = displayRows.map(r=>`
+      <tr><td>${r.label}</td><td>${r.V.toFixed(2)} m/s</td><td>${r.dPkPa100.toFixed(2)} kPa/100m</td><td>#${r.costRank} of ${rows.length}</td>
+      <td>${r.inRange? `<span class="tag" style="color:var(--pass)">✓ in range</span>` : `<span class="tag" style="color:var(--warn)">outside range</span>`}</td></tr>
+    `).join('');
+
+    if(qualifying.length){
+      const mid=(vMin+vMax)/2;
+      const best=qualifying.reduce((a,b)=>Math.abs(a.V-mid)<Math.abs(b.V-mid)?a:b);
+      const alternates=qualifying.filter(r=>r.label!==best.label).map(r=>r.label);
+      this.el('sizeRecSummary').innerHTML=`<div class="alert alert-pass">Recommended pipe: <b>${best.label}</b> (${best.V.toFixed(2)} m/s, Sch 40, ${material})${alternates.length?`<br>Alternatives: ${alternates.join(', ')}`:''}</div>`;
+    } else {
+      this.el('sizeRecSummary').innerHTML=`<div class="alert alert-warn">No standard NPS size keeps velocity within ${vMin}–${vMax} m/s at ${flowM3h.toFixed(1)} m³/h — showing the closest candidates above.</div>`;
+    }
+  }
+
+  /** Auto-generated visual pipeline diagram — Upgrade 6. Draws the current pipeline as a linear
+      sequence of segment/fitting nodes with size, length, flow and direction, rebuilt on every
+      recalculation so it always reflects the live pipeline. */
+  renderPipelineDiagram(res){
+    const target=this.el('pipelineDiagram');
+    if(this.pipeline.length===0){
+      target.innerHTML='<div class="pl-empty">Add pipe segments and fittings above to see the pipeline diagram.</div>';
+      return;
+    }
+    const u=this.units.labels();
+    const nodes=['<div class="pd-node" style="border-left-color:var(--pass);"><div class="pd-title">🔵 Inlet</div><div class="pd-sub">Flow start</div></div>'];
+    this.pipeline.forEach(item=>{
+      nodes.push('<div class="pd-arrow">→</div>');
+      if(item.type==='segment'){
+        const segRes=res.segResults.find(s=>s.id===item.id);
+        nodes.push(`<div class="pd-node segment">
+          <div class="pd-title">🔧 ${item.name}</div>
+          <div class="pd-sub">${segRes?segRes.sizeLabel:'?'} · ${item.lengthM}m<br>${segRes?segRes.V.toFixed(2)+' m/s':''}${item.elevationM?(item.elevationM>0?' · ↑'+item.elevationM+'m':' · ↓'+Math.abs(item.elevationM)+'m'):''}</div>
+        </div>`);
+      } else {
+        const label = item.category==='custom'? (item.customName||'Custom') : item.subtype;
+        const icon = item.category==='transition' ? '↔️' : /valve/i.test(label) ? '🚰' : /strainer/i.test(label) ? '🧹' : /elbow|bend|tee|wye/i.test(label) ? '↪️' : '⚙️';
+        nodes.push(`<div class="pd-node fitting"><div class="pd-title">${icon} ${label}</div><div class="pd-sub">${item.qty&&item.qty>1?`×${item.qty}`:''}</div></div>`);
+      }
+    });
+    nodes.push('<div class="pd-arrow">→</div>');
+    nodes.push('<div class="pd-node" style="border-left-color:var(--fail);"><div class="pd-title">🔴 Outlet</div><div class="pd-sub">'+this.units.m3hFromM3s(res.Q_m3s).toFixed(1)+' '+u.flow+'</div></div>');
+    target.innerHTML = `<div class="pd-diagram">${nodes.join('')}</div>`;
+  }
+
   renderPipelineResults(res){
     const u=this.units.labels();
     this.el('segmentResultsTable').innerHTML = res.segResults.length? res.segResults.map(s=>`
-      <tr><td>${s.name}</td><td>${s.sizeLabel}</td><td>${this.units.m3hFromM3s(s.Q_m3s).toFixed(2)} m³/h${s.flowMode!=='global'?` <span class="tag badge-primary">manual</span>`:''}</td><td>${s.V.toFixed(3)} m/s</td><td>${s.re.toFixed(0)} (${s.regime})</td><td>${s.f.toFixed(5)}</td><td>${s.majorLossM.toFixed(3)} m</td><td>${this.units.paToDisplay(s.frictionPa).toFixed(2)} ${u.press}</td></tr>
-    `).join('') : '<tr><td colspan="8" style="color:var(--text-faint)">No pipe segments yet.</td></tr>';
+      <tr><td>${s.name}</td><td>${s.sizeLabel}</td><td>${s.odMm.toFixed(2)} / ${s.wallMm!=null?s.wallMm.toFixed(2):'—'} / ${s.idMm.toFixed(2)}</td><td>${this.units.m3hFromM3s(s.Q_m3s).toFixed(2)} m³/h${s.flowMode!=='global'?` <span class="tag badge-primary">manual</span>`:''}</td><td>${s.V.toFixed(3)} m/s</td><td>${s.re.toFixed(0)} (${s.regime})</td><td>${s.f.toFixed(5)}</td><td>${s.majorLossM.toFixed(3)} m</td><td>${this.units.paToDisplay(s.frictionPa).toFixed(2)} ${u.press}</td></tr>
+    `).join('') : '<tr><td colspan="9" style="color:var(--text-faint)">No pipe segments yet.</td></tr>';
 
     this.el('fittingResultsTable').innerHTML = res.fitResults.length? res.fitResults.map(f=>`
       <tr><td>${f.name}${f.note?` <span class="tag" style="color:var(--warn)">${f.note}</span>`:''}</td><td>${f.K!=null?f.K.toFixed(3):'—'}</td><td>${f.headLossM.toFixed(3)} m</td><td>${this.units.paToDisplay(f.pa).toFixed(2)} ${u.press}</td></tr>
@@ -2071,28 +2571,28 @@ class PressureDropApp{
     });
     this.el('expCsv').addEventListener('click',()=>{
       const res=this.lastResult;
-      const rows=[['Type','Name','Flow','Velocity/K','Loss (m)','Pressure (kPa)']];
-      res.segResults.forEach(s=>rows.push(['Segment',s.name,(s.Q_m3s*3600).toFixed(2)+' m³/h'+(s.flowMode!=='global'?' (manual)':''),s.V.toFixed(3)+' m/s',s.majorLossM.toFixed(3),(s.frictionPa/1000).toFixed(2)]));
-      res.fitResults.forEach(f=>rows.push(['Fitting',f.name,'',f.K!=null?f.K.toFixed(3):'—',f.headLossM.toFixed(3),(f.pa/1000).toFixed(2)]));
-      rows.push(['','Friction Pressure Drop','','',(res.cumFrictionHeadM).toFixed(3),(res.frictionPressureDropPa/1000).toFixed(2)]);
+      const rows=[['Type','Name','OD/Wall/ID (mm)','Flow','Velocity/K','Loss (m)','Pressure (kPa)']];
+      res.segResults.forEach(s=>rows.push(['Segment',s.name,`${s.odMm.toFixed(2)} / ${s.wallMm!=null?s.wallMm.toFixed(2):'—'} / ${s.idMm.toFixed(2)}`,(s.Q_m3s*3600).toFixed(2)+' m³/h'+(s.flowMode!=='global'?' (manual)':''),s.V.toFixed(3)+' m/s',s.majorLossM.toFixed(3),(s.frictionPa/1000).toFixed(2)]));
+      res.fitResults.forEach(f=>rows.push(['Fitting',f.name,'','',f.K!=null?f.K.toFixed(3):'—',f.headLossM.toFixed(3),(f.pa/1000).toFixed(2)]));
+      rows.push(['','Friction Pressure Drop','','','',(res.cumFrictionHeadM).toFixed(3),(res.frictionPressureDropPa/1000).toFixed(2)]);
       if(res.isGravityAssisted){
-        rows.push(['','Gravity Assistance','','','',(res.gravityAssistancePa/1000).toFixed(2)]);
-        rows.push(['','Net Available Pressure','','','',(res.netAvailablePressurePa/1000).toFixed(2)]);
-        rows.push(['','Pump Power','','','','0.000']);
-        rows.push(['','Annual Energy Cost','','','','0']);
+        rows.push(['','Gravity Assistance','','','','',(res.gravityAssistancePa/1000).toFixed(2)]);
+        rows.push(['','Net Available Pressure','','','','',(res.netAvailablePressurePa/1000).toFixed(2)]);
+        rows.push(['','Pump Power','','','','','0.000']);
+        rows.push(['','Annual Energy Cost','','','','','0']);
       } else {
-        rows.push(['','Static Elevation Pressure','','','',(res.elevationPressurePa/1000).toFixed(2)]);
-        rows.push(['','Total Required Pressure','','','',(res.totalRequiredPressurePa/1000).toFixed(2)]);
-        rows.push(['','Pump Brake Power (kW)','','','',(res.brakePowerW/1000).toFixed(3)]);
-        rows.push(['','Annual Energy Cost','','','',res.annualCost.toFixed(0)]);
+        rows.push(['','Static Elevation Pressure','','','','',(res.elevationPressurePa/1000).toFixed(2)]);
+        rows.push(['','Total Required Pressure','','','','',(res.totalRequiredPressurePa/1000).toFixed(2)]);
+        rows.push(['','Pump Brake Power (kW)','','','','',(res.brakePowerW/1000).toFixed(3)]);
+        rows.push(['','Annual Energy Cost','','','','',res.annualCost.toFixed(0)]);
       }
       CSVExporter.download('pressuredrop_pipeline_results.csv', rows);
     });
     this.el('expXls').addEventListener('click',()=>{
       const res=this.lastResult;
-      const rows=[['Type','Name','Flow','Velocity/K','Loss (m)','Pressure (kPa)']];
-      res.segResults.forEach(s=>rows.push(['Segment',s.name,(s.Q_m3s*3600).toFixed(2)+' m³/h'+(s.flowMode!=='global'?' (manual)':''),s.V.toFixed(3)+' m/s',s.majorLossM.toFixed(3),(s.frictionPa/1000).toFixed(2)]));
-      res.fitResults.forEach(f=>rows.push(['Fitting',f.name,'',f.K!=null?f.K.toFixed(3):'—',f.headLossM.toFixed(3),(f.pa/1000).toFixed(2)]));
+      const rows=[['Type','Name','OD/Wall/ID (mm)','Flow','Velocity/K','Loss (m)','Pressure (kPa)']];
+      res.segResults.forEach(s=>rows.push(['Segment',s.name,`${s.odMm.toFixed(2)} / ${s.wallMm!=null?s.wallMm.toFixed(2):'—'} / ${s.idMm.toFixed(2)}`,(s.Q_m3s*3600).toFixed(2)+' m³/h'+(s.flowMode!=='global'?' (manual)':''),s.V.toFixed(3)+' m/s',s.majorLossM.toFixed(3),(s.frictionPa/1000).toFixed(2)]));
+      res.fitResults.forEach(f=>rows.push(['Fitting',f.name,'','',f.K!=null?f.K.toFixed(3):'—',f.headLossM.toFixed(3),(f.pa/1000).toFixed(2)]));
       ExcelExporter.download('pressuredrop_pipeline_results.xls', rows);
     });
     this.el('expJson').addEventListener('click',()=>{
@@ -2119,6 +2619,11 @@ class PressureDropApp{
       {t:'Gravity-Assisted Flow', b:"When a net elevation drop supplies more driving pressure than the pipeline's friction and static losses consume, no pump is needed. This software floors pump power and energy cost at zero in that case and reports the surplus as Gravity Assistance / Net Available Pressure rather than a negative number."},
       {t:'Pipe Roughness (Absolute)', b:'Absolute roughness ε is a characteristic height of surface irregularities on the pipe bore. Typical published values: commercial steel 0.045 mm, PVC/CPVC 0.0015 mm, cast iron 0.26 mm, concrete up to several tenths of a millimetre depending on finish.'},
       {t:'NPS &amp; Schedule Database', b:'Pipe sizes (NPS 1/2" through 64") and wall thicknesses for Schedules 5, 10, 20, 30, 40, 60, 80, 100, 120, 140, 160, and XXS follow ASME B36.10M (carbon/alloy steel pipe) — this is the correct governing standard for pipe wall thickness and schedule, not ASHRAE (which covers HVAC, ventilation, and building energy/refrigeration standards, not pressure-piping wall thickness). Data for NPS 1/2" through 12" is taken directly from the published ASME table. For NPS 14" and above, exact schedule-by-schedule figures become less consistently published and less commonly manufactured off-the-shelf; this software uses a smooth, monotonic engineering estimate calibrated against the verified 10"/12" values for those larger sizes. For final, safety-critical design at NPS 14" and above, confirm wall thickness against ASME B36.10M or the pipe manufacturer directly. Not every schedule is available at every size (e.g. XXS is rarely manufactured above NPS 8"–10") — the app automatically falls back to the nearest available schedule when this occurs.'},
+      {t:'IS 1239 (Part 1):2004 Steel Tubes', b:'For pipes specified to the Indian Standard rather than ASME, this software uses the exact dimensions published in IS 1239 (Part 1):2004, Tables 3, 4 and 5 — outside diameter, wall thickness, and mass per metre for the Light, Medium, and Heavy classes across nominal bores 6–150 mm (Light class is only defined up to 100 mm nominal bore per the standard, consistent with real manufacturing practice).'},
+      {t:'PPR Pipe (EN ISO 15874 / DIN 8077)', b:'PPR (polypropylene random copolymer) pipe is sized by Standard Dimension Ratio (SDR): wall thickness = outside diameter ÷ SDR. This software maps the common pressure classes as PN10→SDR17, PN16→SDR11, PN20→SDR7.4, and PN25→SDR6, the standard governing relationship — real manufactured pipe rounds to fixed catalogue thicknesses, so always confirm the exact certified wall thickness against the specific manufacturer\'s datasheet for final design.'},
+      {t:'Manual Thickness Override', b:'Any pipe segment can have its computed wall thickness overridden with the "Custom Thickness" checkbox — useful for corroded/worn pipe, a manufacturer\'s actual certified thickness that differs slightly from catalogue values, or a non-standard product. The internal diameter, flow area, velocity, and pressure drop for that segment recalculate immediately from the entered value, regardless of which pipe standard the segment otherwise uses.'},
+      {t:'Strainer Database', b:'Five dedicated strainer types (Y-Strainer, Basket Strainer, Duplex Strainer, T-Strainer, In-Line Strainer) are available as fittings, each with separate Clean and Dirty condition K-values — dirty screens carry substantially higher loss as they load up with debris in service. These are typical published starting values; real strainer loss depends heavily on mesh size and manufacturer, so use the K Override field on the fitting for a manufacturer-specific value when one is available.'},
+      {t:'Project Design Criteria', b:'Velocity PASS/WARNING/FAIL checks and pipe-sizing recommendations are driven by a single project-wide Min/Max velocity range (set on the Settings page), not a fixed universal rule — because the right velocity range genuinely differs by service: potable water distribution, cooling water, fire protection, and food/beverage lines all have different accepted ranges. Pick a standard template or define a fully custom range; every check across the whole project uses it consistently.'},
       {t:'Recommended Design Velocities', b:'As a general design guideline (not a hard rule), liquid velocities in process piping are commonly targeted between roughly 0.9 and 3.0 m/s to balance pressure drop, erosion and pipe cost, with gas lines run substantially faster.'},
       {t:'Pump Efficiency Considerations', b:'Centrifugal pump efficiency varies with operating point relative to the best-efficiency point (BEP). Operating far from BEP typically reduces efficiency and increases vibration and wear.'}
     ];
@@ -2138,6 +2643,31 @@ class PressureDropApp{
       if(confirm('Clear all saved projects and scenarios from this browser?')){
         this.storage.clearAll(); this.renderProjects(); this.scenarios.clear(); this.renderScenarios();
       }
+    });
+
+    const velTemplateSel=this.el('velocityTemplate'), velMinInp=this.el('velMinInput'), velMaxInp=this.el('velMaxInput');
+    velTemplateSel.value=this.designCriteria.template;
+    velTemplateSel.addEventListener('change',()=>{
+      const t=this.velocityTemplates[velTemplateSel.value];
+      this.designCriteria.template=velTemplateSel.value;
+      if(velTemplateSel.value!=='Custom'){
+        this.designCriteria.vMin=t.vMin; this.designCriteria.vMax=t.vMax;
+        velMinInp.value=t.vMin; velMaxInp.value=t.vMax;
+      }
+      this.recalculate();
+    });
+    const switchToCustom=()=>{
+      if(velTemplateSel.value!=='Custom'){ velTemplateSel.value='Custom'; this.designCriteria.template='Custom'; }
+    };
+    velMinInp.addEventListener('input',()=>{
+      switchToCustom();
+      this.designCriteria.vMin=parseFloat(velMinInp.value)||0;
+      this.recalculate();
+    });
+    velMaxInp.addEventListener('input',()=>{
+      switchToCustom();
+      this.designCriteria.vMax=parseFloat(velMaxInp.value)||0.1;
+      this.recalculate();
     });
   }
 
@@ -2226,6 +2756,218 @@ class PressureDropApp{
       const cheapest=list.reduce((a,b)=>a.cost<b.cost?a:b);
       best.style.display='block'; best.textContent=`Best design by annual energy cost: "${cheapest.name}" at ${cheapest.cost.toFixed(0)} per year.`;
     } else { best.style.display='none'; }
+  }
+
+  /* ================================================================
+     PUMP ENGINEERING — curve entry, VFD/affinity analysis
+     ================================================================ */
+  bindPumpEngView(){
+    this.el('pumpCsvBtn').addEventListener('click',()=>this.el('pumpCsvFile').click());
+    this.el('pumpCsvFile').addEventListener('change',(e)=>{
+      const file=e.target.files[0]; if(!file) return;
+      const reader=new FileReader();
+      reader.onload=()=>{
+        const pts=this.parsePumpCsv(reader.result);
+        if(pts.length===0){ alert('Could not find valid Flow/Head data rows in that CSV. Expect a header row with Flow, Head, Efficiency, Power, NPSHr columns.'); return; }
+        this.pumpCurvePoints = pts;
+        this.renderPumpPointsTable();
+        this.recalculate();
+      };
+      reader.readAsText(file);
+      e.target.value='';
+    });
+    this.el('pumpRefBtn').addEventListener('click',()=>this.el('pumpRefFile').click());
+    this.el('pumpRefFile').addEventListener('change',(e)=>{
+      const file=e.target.files[0]; if(!file) return;
+      const preview=this.el('pumpRefPreview');
+      if(/image\//.test(file.type)){
+        const reader=new FileReader();
+        reader.onload=()=>{
+          preview.innerHTML = `<div class="hint">Reference datasheet: ${file.name} — read the points off it into the table below.</div>
+            <img src="${reader.result}" style="max-width:100%;border-radius:8px;margin:6px 0 12px;border:1px solid var(--card-border);">`;
+        };
+        reader.readAsDataURL(file);
+      } else {
+        preview.innerHTML = `<div class="alert alert-info">📎 Attached for reference: <b>${file.name}</b> — this file type can't be read automatically; enter the curve points manually into the table below.</div>`;
+      }
+      e.target.value='';
+    });
+    this.el('pumpAddPointBtn').addEventListener('click',()=>{
+      this.pumpCurvePoints.push({Q:0,H:0,Eff:0,P:0,NPSHr:null});
+      this.renderPumpPointsTable(); this.recalculate();
+    });
+    this.el('pumpClearBtn').addEventListener('click',()=>{
+      if(confirm('Clear all pump curve points?')){ this.pumpCurvePoints=[]; this.renderPumpPointsTable(); this.recalculate(); }
+    });
+    this.el('pumpRatedHz').addEventListener('input',()=>this.recalculate());
+    this.el('pumpCurrentHz').addEventListener('input',()=>this.recalculate());
+    this.renderPumpPointsTable();
+  }
+
+  /** Parse a CSV with header row (Flow, Head, Efficiency, Power, NPSHr — any order, case-insensitive)
+      into pump curve points. Returns [] if no valid Flow+Head rows are found. */
+  parsePumpCsv(text){
+    const lines=text.split(/\r?\n/).map(l=>l.trim()).filter(l=>l.length>0);
+    if(lines.length<2) return [];
+    const header=lines[0].split(',').map(h=>h.trim().toLowerCase());
+    const findCol=(...keys)=>header.findIndex(h=>keys.some(k=>h.includes(k)));
+    const idx={ Q:findCol('flow','q'), H:findCol('head','h'), Eff:findCol('eff'), P:findCol('power','kw'), NPSHr:findCol('npsh') };
+    const points=[];
+    for(let i=1;i<lines.length;i++){
+      const cols=lines[i].split(',').map(c=>c.trim());
+      const get=(key)=>{ const v=idx[key]>=0?cols[idx[key]]:undefined; return (v!=null && v!=='')? parseFloat(v) : null; };
+      const Q=get('Q'), H=get('H');
+      if(Q==null||H==null||isNaN(Q)||isNaN(H)) continue;
+      points.push({Q, H, Eff:get('Eff')??0, P:get('P')??0, NPSHr:get('NPSHr')});
+    }
+    return points;
+  }
+
+  renderPumpPointsTable(){
+    const tbody=this.el('pumpPointsTable');
+    tbody.innerHTML = this.pumpCurvePoints.length? this.pumpCurvePoints.map((p,i)=>`
+      <tr data-i="${i}">
+        <td><input class="input" data-pf="Q" type="number" step="any" value="${p.Q}"></td>
+        <td><input class="input" data-pf="H" type="number" step="any" value="${p.H}"></td>
+        <td><input class="input" data-pf="Eff" type="number" step="any" value="${p.Eff}"></td>
+        <td><input class="input" data-pf="P" type="number" step="any" value="${p.P}"></td>
+        <td><input class="input" data-pf="NPSHr" type="number" step="any" value="${p.NPSHr??''}"></td>
+        <td><button class="btn btn-sm" data-act="delpt">✕</button></td>
+      </tr>`).join('') : '<tr><td colspan="6" style="color:var(--text-faint)">No points entered yet — click "+ Add Point" above or import a CSV.</td></tr>';
+    tbody.querySelectorAll('[data-pf]').forEach(inp=>{
+      inp.addEventListener('input',()=>{
+        const i=parseInt(inp.closest('tr').dataset.i);
+        const v = inp.value===''? null : parseFloat(inp.value);
+        this.pumpCurvePoints[i][inp.dataset.pf]=v;
+        this.recalculate();
+      });
+    });
+    tbody.querySelectorAll('[data-act="delpt"]').forEach(btn=>{
+      btn.addEventListener('click',()=>{
+        this.pumpCurvePoints.splice(parseInt(btn.closest('tr').dataset.i),1);
+        this.renderPumpPointsTable(); this.recalculate();
+      });
+    });
+  }
+
+  /** Full Pump Engineering page render: system curve, proposed curve, uploaded/manual curve,
+      operating point (intersection), BEP, duty validation, and VFD/affinity-law analysis. */
+  renderPumpEngineering(res){
+    if(typeof Chart==='undefined') return;
+    const ctx=this.lastCtx, g=9.80665, rho=res.rho;
+    const requiredQ_m3h=this.units.m3hFromM3s(res.Q_m3s);
+    const requiredH_m=res.totalDynamicHeadMDisplay;
+    const qMax=Math.max(requiredQ_m3h*2, 10);
+    const th=this.charts.theme();
+
+    const sysHeadFn=(qM3h)=>{
+      const qM3s=qM3h/3600;
+      return this.calc.systemHeadAtFlow(this.pipeline, qM3s, ctx.frictionMethod, res.fluid) + (res.staticPressurePa/(rho*g));
+    };
+
+    const N=20, labels=[], sysData=[], proposedData=[];
+    const shutoffH = requiredH_m>0? requiredH_m*1.3 : 10;
+    for(let i=0;i<=N;i++){
+      const q=qMax*i/N;
+      labels.push(q.toFixed(0));
+      sysData.push(sysHeadFn(q).toFixed(2));
+      proposedData.push(Math.max(shutoffH*(1-0.5*Math.pow(q/qMax,2)),0).toFixed(2));
+    }
+    const uploadedPts=this.pumpCurvePoints.filter(p=>p.Q!=null && p.H!=null && !isNaN(p.Q) && !isNaN(p.H));
+    const uploadedData = uploadedPts.length? labels.map(l=>PumpEngine.interp(uploadedPts, parseFloat(l), 'H').toFixed(2)) : null;
+
+    const datasets=[
+      {label:'System Curve', data:sysData, borderColor:'#FF6B00', backgroundColor:'rgba(255,107,0,0.1)', fill:true, tension:0.25},
+      {label:'Proposed Pump Curve', data:proposedData, borderColor:'#42C5FF', fill:false, tension:0.3, borderDash:[6,4]}
+    ];
+    if(uploadedData) datasets.push({label:'Uploaded/Manual Pump Curve', data:uploadedData, borderColor:'#2ECC71', fill:false, tension:0.15});
+    this.charts.render('chartPumpCompare',{type:'line',data:{labels,datasets}, options:this._lineOpts(th,'Flow (m³/h)','Head (m)')});
+
+    const opPoint = uploadedPts.length>=2 ? PumpEngine.findIntersection(uploadedPts, sysHeadFn, qMax) : null;
+    this.el('opPointKpis').innerHTML = opPoint ? `
+      <div class="kpi-card"><div class="kpi-label">Operating Flow</div><div class="kpi-value">${opPoint.Q.toFixed(1)}<span class="kpi-unit">m³/h</span></div></div>
+      <div class="kpi-card"><div class="kpi-label">Operating Head</div><div class="kpi-value">${opPoint.H.toFixed(2)}<span class="kpi-unit">m</span></div></div>
+      <div class="kpi-card"><div class="kpi-label">Operating Efficiency</div><div class="kpi-value">${opPoint.Eff!=null?opPoint.Eff.toFixed(1):'—'}<span class="kpi-unit">%</span></div></div>
+      <div class="kpi-card"><div class="kpi-label">Operating Power</div><div class="kpi-value">${opPoint.P!=null?opPoint.P.toFixed(2):'—'}<span class="kpi-unit">kW</span></div></div>
+      <div class="kpi-card"><div class="kpi-label">Operating NPSHr</div><div class="kpi-value">${opPoint.NPSHr!=null?opPoint.NPSHr.toFixed(2):'—'}<span class="kpi-unit">m</span></div></div>
+    ` : `<div class="alert alert-info" style="grid-column:1/-1;">Enter at least two pump curve points that cross the system curve to compute the operating point.</div>`;
+
+    const bep=PumpEngine.bep(uploadedPts);
+    this.el('bepKpis').innerHTML = bep ? `
+      <div class="kpi-card"><div class="kpi-label">BEP Flow</div><div class="kpi-value">${bep.Q.toFixed(1)}<span class="kpi-unit">m³/h</span></div></div>
+      <div class="kpi-card"><div class="kpi-label">BEP Head</div><div class="kpi-value">${bep.H.toFixed(2)}<span class="kpi-unit">m</span></div></div>
+      <div class="kpi-card"><div class="kpi-label">BEP Efficiency</div><div class="kpi-value">${bep.Eff.toFixed(1)}<span class="kpi-unit">%</span></div></div>
+      ${opPoint? `<div class="kpi-card"><div class="kpi-label">Distance from BEP</div><div class="kpi-value">${(100*Math.abs(opPoint.Q-bep.Q)/Math.max(bep.Q,0.001)).toFixed(1)}<span class="kpi-unit">%</span></div></div>` : ''}
+    ` : `<div class="alert alert-info" style="grid-column:1/-1;">No pump curve points entered yet.</div>`;
+
+    const val=PumpEngine.validateDuty(uploadedPts, requiredQ_m3h, requiredH_m);
+    this.el('pumpValidation').innerHTML = `<div class="alert alert-${val.status==='PASS'?'pass':val.status==='WARNING'?'warn':val.status==='INFO'?'info':'fail'}">[${val.status}] ${val.msg}</div>
+      <div class="hint">Required duty point (from the current pipeline): ${requiredQ_m3h.toFixed(1)} m³/h at ${requiredH_m.toFixed(2)} m total dynamic head.</div>`;
+
+    // ---------------- VFD & Affinity Laws ----------------
+    const ratedHz=parseFloat(this.el('pumpRatedHz').value)||50;
+    const currentHz=parseFloat(this.el('pumpCurrentHz').value)||50;
+    if(uploadedPts.length>=2){
+      const scaledCurrent=PumpEngine.scaleToFrequency(uploadedPts, ratedHz, currentHz);
+      const opCurrent=PumpEngine.findIntersection(scaledCurrent, sysHeadFn, qMax*1.5);
+      this.el('vfdResultKpis').innerHTML = opCurrent ? `
+        <div class="kpi-card"><div class="kpi-label">Current Flow</div><div class="kpi-value">${opCurrent.Q.toFixed(1)}<span class="kpi-unit">m³/h</span></div></div>
+        <div class="kpi-card"><div class="kpi-label">Current Head</div><div class="kpi-value">${opCurrent.H.toFixed(2)}<span class="kpi-unit">m</span></div></div>
+        <div class="kpi-card"><div class="kpi-label">Current Efficiency</div><div class="kpi-value">${opCurrent.Eff!=null?opCurrent.Eff.toFixed(1):'—'}<span class="kpi-unit">%</span></div></div>
+        <div class="kpi-card"><div class="kpi-label">Current Power</div><div class="kpi-value">${opCurrent.P!=null?opCurrent.P.toFixed(2):'—'}<span class="kpi-unit">kW</span></div></div>
+        <div class="kpi-card"><div class="kpi-label">Current Frequency</div><div class="kpi-value">${currentHz.toFixed(1)}<span class="kpi-unit">Hz</span></div></div>
+      ` : `<div class="alert alert-info" style="grid-column:1/-1;">The pump curve scaled to ${currentHz} Hz never crosses the system curve in the scanned flow range.</div>`;
+
+      const freqList=[30,35,40,45,50,60];
+      const mfLabels=[]; for(let i=0;i<=N;i++) mfLabels.push((qMax*1.3*i/N).toFixed(0));
+      const mfDatasets=freqList.map((hz,fi)=>{
+        const scaled=PumpEngine.scaleToFrequency(uploadedPts, ratedHz, hz);
+        return {label:`${hz} Hz`, data:mfLabels.map(l=>PumpEngine.interp(scaled, parseFloat(l), 'H').toFixed(2)), borderColor:`hsl(${fi*55},80%,60%)`, borderWidth:2, pointRadius:0, tension:0.2};
+      });
+      mfDatasets.push({label:'System Curve', data:mfLabels.map(l=>sysHeadFn(parseFloat(l)).toFixed(2)), borderColor:th.text, borderWidth:2, borderDash:[4,3], pointRadius:0});
+      this.charts.render('chartVfdFreq',{type:'line',data:{labels:mfLabels,datasets:mfDatasets}, options:this._lineOpts(th,'Flow (m³/h)','Head (m)')});
+
+      const scaled50=PumpEngine.scaleToFrequency(uploadedPts, ratedHz, 50);
+      const op50=PumpEngine.findIntersection(scaled50, sysHeadFn, qMax*1.5);
+      if(op50 && opCurrent && op50.P!=null && opCurrent.P!=null){
+        const powerReductionKw=op50.P-opCurrent.P;
+        const opHours=ctx.opHours||0, elecCost=ctx.elecCost||0;
+        const annualSavingKwh=powerReductionKw*opHours;
+        const annualCostSaving=annualSavingKwh*elecCost;
+        this.el('vfdSavingKpis').innerHTML=`
+          <div class="kpi-card"><div class="kpi-label">Power Reduction</div><div class="kpi-value">${powerReductionKw.toFixed(2)}<span class="kpi-unit">kW</span></div></div>
+          <div class="kpi-card"><div class="kpi-label">Annual Energy Saving</div><div class="kpi-value">${annualSavingKwh.toFixed(0)}<span class="kpi-unit">kWh</span></div></div>
+          <div class="kpi-card"><div class="kpi-label">Annual Cost Saving</div><div class="kpi-value">${annualCostSaving.toFixed(0)}<span class="kpi-unit">${this.units.labels().cost.split('/')[0]}</span></div></div>
+        `;
+      } else {
+        this.el('vfdSavingKpis').innerHTML=`<div class="alert alert-info" style="grid-column:1/-1;">Need both a 50 Hz and a current-frequency operating point to compute savings.</div>`;
+      }
+
+      let suggested=null;
+      for(let hz=30; hz<=60; hz+=0.5){
+        const scaled=PumpEngine.scaleToFrequency(uploadedPts, ratedHz, hz);
+        const op=PumpEngine.findIntersection(scaled, sysHeadFn, qMax*1.5);
+        if(op && op.Q>=requiredQ_m3h*0.98){ suggested=hz; break; }
+      }
+      if(suggested!=null){
+        const scaledSug=PumpEngine.scaleToFrequency(uploadedPts, ratedHz, suggested);
+        const opSug=PumpEngine.findIntersection(scaledSug, sysHeadFn, qMax*1.5);
+        const savingVs50=(op50 && opSug && op50.P!=null && opSug.P!=null)? (op50.P-opSug.P)*(ctx.opHours||0)*(ctx.elecCost||0) : null;
+        this.el('vfdRecommendation').innerHTML=`
+          <div class="alert alert-pass">
+            Current: <b>${currentHz.toFixed(1)} Hz</b><br>
+            Suggested: <b>${suggested.toFixed(1)} Hz</b> — the lowest frequency that still delivers the required flow<br>
+            ${savingVs50!=null? `Expected annual saving vs 50 Hz operation: <b>${savingVs50.toFixed(0)} ${this.units.labels().cost.split('/')[0]}</b>` : ''}
+          </div>`;
+      } else {
+        this.el('vfdRecommendation').innerHTML=`<div class="alert alert-info">Could not find a frequency in the 30–60 Hz range that meets the required flow with the entered pump curve — the pump may be undersized for this duty.</div>`;
+      }
+    } else {
+      this.el('vfdResultKpis').innerHTML=`<div class="alert alert-info" style="grid-column:1/-1;">Enter at least two pump curve points to run VFD analysis.</div>`;
+      this.charts.destroy('chartVfdFreq');
+      this.el('vfdSavingKpis').innerHTML='';
+      this.el('vfdRecommendation').innerHTML='';
+    }
   }
 }
 
