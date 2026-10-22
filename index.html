@@ -297,6 +297,11 @@ html[data-theme="light"] .equation{background:rgba(0,0,0,0.05); color:#B5490A;}
   padding:12px 14px; background:var(--card);
 }
 .pl-item.fitting{border-left-color:var(--accent);}
+.pl-item.junction{border-left-width:5px;}
+.pl-item.junction.merge{border-left-color:#2ECC71;}
+.pl-item.junction.split{border-left-color:#8B5CF6;}
+.jb-row{display:flex; gap:8px; align-items:end; margin-bottom:6px; flex-wrap:wrap;}
+.jb-row .field{margin-bottom:0; min-width:120px;}
 .pl-item-top{display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;}
 .pl-item-label{font-weight:700; font-size:12.5px; display:flex; align-items:center; gap:8px;}
 .pl-order-badge{background:var(--primary); color:#1b0f00; font-weight:800; font-size:11px; border-radius:50%; width:22px; height:22px; display:inline-flex; align-items:center; justify-content:center;}
@@ -421,6 +426,7 @@ html[data-theme="light"] .equation{background:rgba(0,0,0,0.05); color:#B5490A;}
             <small>
               <button class="btn btn-sm" id="addSegmentBtn">+ Pipe Segment</button>
               <button class="btn btn-sm" id="addFittingBtn">+ Fitting</button>
+              <button class="btn btn-sm" id="addJunctionBtn">+ Junction</button>
               <button class="btn btn-sm" id="clearPipeline">🗑 Clear Pipeline</button>
             </small>
           </div>
@@ -558,6 +564,13 @@ html[data-theme="light"] .equation{background:rgba(0,0,0,0.05); color:#B5490A;}
       <!-- ---------------- RESULTS ---------------- -->
       <section class="view" data-view="results">
         <div class="grid grid-kpi" id="resultsKpis"></div>
+        <div class="card" id="junctionSummaryCard" style="margin-top:16px; display:none;">
+          <div class="card-title">Junction Summary <small>mass balance &amp; flow at every junction</small></div>
+          <div class="table-wrap">
+            <table><thead><tr><th>#</th><th>Junction</th><th>Incoming (m³/h)</th><th>Outgoing (m³/h)</th><th>Difference</th><th>Velocity</th><th>Flow Direction</th><th>Status</th></tr></thead><tbody id="junctionSummaryTable"></tbody></table>
+          </div>
+          <div class="hint">Branches that don't continue the main line are recorded for mass-balance purposes only — their own downstream pipework is not modeled in this linear pipeline.</div>
+        </div>
         <div class="grid grid-2" style="margin-top:16px;">
           <div class="card">
             <div class="card-title">Calculation Trace <small>step by step</small></div>
@@ -590,6 +603,7 @@ html[data-theme="light"] .equation{background:rgba(0,0,0,0.05); color:#B5490A;}
             while you type the points in yourself; for images it's shown inline below.
           </div>
           <div id="pumpRefPreview"></div>
+          <div id="pumpImportVerification" style="margin-bottom:10px;"></div>
           <div class="table-wrap">
             <table><thead><tr><th>Flow (m³/h)</th><th>Head (m)</th><th>Efficiency (%)</th><th>Power (kW)</th><th>NPSHr (m)</th><th></th></tr></thead><tbody id="pumpPointsTable"></tbody></table>
           </div>
@@ -1281,14 +1295,15 @@ class PipelineCalculator{
   _findPrevSegment(pipeline, idx){ for(let i=idx-1;i>=0;i--){ if(pipeline[i].type==='segment') return pipeline[i]; } return null; }
   _findNextSegment(pipeline, idx){ for(let i=idx+1;i<pipeline.length;i++){ if(pipeline[i].type==='segment') return pipeline[i]; } return null; }
 
-  /** Resolve one fitting's head loss (m). Uses each adjacent segment's own resolved flow (which may differ if manually overridden). Returns {K, V_ref, headLossM, note}. */
-  fittingLoss(item, pipeline, idx, fluid, globalQ_m3s){
+  /** Resolve one fitting's head loss (m) using a precomputed flow map (id -> Q_m3s) built in Pass 1 of
+      run(), so a fitting near a junction always sees the correct post-junction flow on each side. */
+  fittingLossWithMap(item, pipeline, idx, flowMap){
     const g=this.g;
     if(item.category==='transition'){
       const prevSeg=this._findPrevSegment(pipeline,idx), nextSeg=this._findNextSegment(pipeline,idx);
       if(!prevSeg || !nextSeg) return {K:0, V_ref:0, headLossM:0, note:'Needs a pipe segment on both sides to compute.'};
       const g1=this.segmentGeometry(prevSeg), g2=this.segmentGeometry(nextSeg);
-      const Q1=this.segmentQ(prevSeg,fluid,globalQ_m3s), Q2=this.segmentQ(nextSeg,fluid,globalQ_m3s);
+      const Q1=flowMap.get(prevSeg.id), Q2=flowMap.get(nextSeg.id);
       const V1=Q1/g1.area, V2=Q2/g2.area;
       if(item.subtype==='Sudden Expansion'){
         return {K:null, V_ref:Math.max(V1,V2), headLossM:Math.pow(V1-V2,2)/(2*g), note:''};
@@ -1305,28 +1320,97 @@ class PipelineCalculator{
       if(item.subtype==='Eccentric Reducer') K*=1.15;
       return {K, V_ref:Vmax, headLossM:K*Vmax*Vmax/(2*g), note:''};
     }
-    // simple or custom fitting — reference the nearest adjacent segment (and its own resolved flow)
     const prevSeg=this._findPrevSegment(pipeline,idx), nextSeg=this._findNextSegment(pipeline,idx);
     const refSeg = prevSeg || nextSeg;
     if(!refSeg) return {K:0, V_ref:0, headLossM:0, note:'Needs an adjacent pipe segment to compute velocity.'};
     const geo=this.segmentGeometry(refSeg);
-    const V_ref = this.segmentQ(refSeg,fluid,globalQ_m3s)/geo.area;
+    const V_ref = flowMap.get(refSeg.id)/geo.area;
     const qty = item.qty || 1;
     const baseK = item.category==='custom' ? (item.customK||0) : (item.kOverride!=null ? item.kOverride : this.app.minorDb.kFor(item.subtype));
     const K = baseK*qty;
     return {K, V_ref, headLossM: K*V_ref*V_ref/(2*g), note:''};
   }
 
+  /** Resolve a Merge or Split junction. Merge: Header Flow = Σ incoming (upstream running flow, optionally
+      included, plus manually-entered branch flows) — always mass-balanced by construction, with an optional
+      user-entered expected header flow to validate against for data-entry errors. Split: the incoming flow
+      is fixed by the upstream pipeline; outgoing branches are user-entered and validated against it
+      (Σ branches must equal incoming); exactly one branch is marked to continue as the pipeline's main line
+      downstream — the others are recorded for mass-balance purposes only, since modeling their own separate
+      downstream pipework would require true multi-branch network topology beyond this linear tool's scope. */
+  resolveJunction(item, currentQ_m3s, pipeline, idx){
+    const branches = item.branches || [];
+    const refSeg = this._findNextSegment(pipeline,idx) || this._findPrevSegment(pipeline,idx);
+    let velocityAtJunction = null;
+    if(item.kind==='merge'){
+      const upstreamFlowM3h = currentQ_m3s*3600;
+      const includeUpstream = item.includeUpstream!==false;
+      const branchTotal = branches.reduce((s,b)=>s+(b.flowM3h||0),0);
+      const incomingTotalM3h = (includeUpstream? upstreamFlowM3h : 0) + branchTotal;
+      const incomingList=[];
+      if(includeUpstream) incomingList.push({name:'Upstream (main line)', flowM3h:upstreamFlowM3h});
+      branches.forEach(b=>incomingList.push({name:b.name||'Branch', flowM3h:b.flowM3h||0}));
+      const outgoingListM3h=[{name:'Header', flowM3h:incomingTotalM3h}];
+      let massBalance;
+      if(item.expectedHeaderM3h!=null && item.expectedHeaderM3h!==''){
+        const diff=incomingTotalM3h-item.expectedHeaderM3h;
+        massBalance = Math.abs(diff)<0.01
+          ? {status:'PASS', msg:`Mass Balanced — computed header flow ${incomingTotalM3h.toFixed(2)} m³/h matches the expected/design value.`}
+          : {status:'ERROR', msg:`Incoming Flow = ${incomingTotalM3h.toFixed(2)} m³/h, Expected Header Flow = ${item.expectedHeaderM3h.toFixed(2)} m³/h, Difference = ${diff.toFixed(2)} m³/h.`};
+      } else {
+        massBalance = {status:'PASS', msg:`Mass Balanced — Header Flow = Σ incoming branches = ${incomingTotalM3h.toFixed(2)} m³/h.`};
+      }
+      const outgoingMainQ_m3s = incomingTotalM3h/3600;
+      if(refSeg){ const geo=this.segmentGeometry(refSeg); velocityAtJunction = outgoingMainQ_m3s/geo.area; }
+      return {id:item.id, kind:'merge', label:item.label, incomingList, incomingTotalM3h, outgoingListM3h,
+        outgoingMainQ_m3s, massBalance, velocityAtJunction, flowDirection:'Branches → Header (downstream)'};
+    } else {
+      const incomingTotalM3h = currentQ_m3s*3600;
+      const branchTotal = branches.reduce((s,b)=>s+(b.flowM3h||0),0);
+      const diff = incomingTotalM3h - branchTotal;
+      const massBalance = Math.abs(diff)<0.01
+        ? {status:'PASS', msg:`Mass Balanced — ${incomingTotalM3h.toFixed(2)} = ${branchTotal.toFixed(2)} m³/h.`}
+        : {status:'ERROR', msg:`Incoming Flow = ${incomingTotalM3h.toFixed(2)} m³/h, Outgoing Flow = ${branchTotal.toFixed(2)} m³/h, Difference = ${diff.toFixed(2)} m³/h.`};
+      const mainIdx = (item.mainBranchIndex!=null && branches[item.mainBranchIndex]) ? item.mainBranchIndex : 0;
+      const mainBranch = branches[mainIdx];
+      const outgoingMainQ_m3s = mainBranch ? (mainBranch.flowM3h||0)/3600 : currentQ_m3s;
+      if(refSeg){ const geo=this.segmentGeometry(refSeg); velocityAtJunction = incomingTotalM3h/3600/geo.area; }
+      const otherCount = Math.max(branches.length-1, 0);
+      return {id:item.id, kind:'split', label:item.label,
+        incomingList:[{name:'Incoming (main line)', flowM3h:incomingTotalM3h}], incomingTotalM3h,
+        outgoingListM3h:branches.map(b=>({name:b.name||'Branch', flowM3h:b.flowM3h||0})),
+        outgoingMainQ_m3s, massBalance, velocityAtJunction,
+        flowDirection:`Header → ${mainBranch?mainBranch.name||'Main':'Main'} (continues)${otherCount>0?` + ${otherCount} other branch(es) (not modeled downstream)`:''}`};
+    }
+  }
+
   run(pipeline, fluid, Q_m3s, staticPressureKpa, pumpEff, opHours, elecCost, npshMarginM, frictionMethod){
     const g=this.g, rho=fluid.density, mu=fluid.viscosity_Pas, nu=mu/rho;
+
+    // ---- Pass 1: resolve flow through the whole pipeline in sequence, including junctions. ----
+    // This must run to completion before Pass 2, so that a fitting sitting near a junction can look up
+    // the correct post-junction flow for a segment that appears LATER in the array.
+    let currentQ_m3s = Q_m3s;
+    const flowMap = new Map();
+    const junctionResults = [];
+    pipeline.forEach((item,idx)=>{
+      if(item.type==='segment'){
+        flowMap.set(item.id, this.segmentQ(item, fluid, currentQ_m3s));
+      } else if(item.type==='junction'){
+        const jres=this.resolveJunction(item, currentQ_m3s, pipeline, idx);
+        junctionResults.push(jres);
+        currentQ_m3s = jres.outgoingMainQ_m3s;
+      }
+    });
+
+    // ---- Pass 2: compute hydraulics using the flows resolved above. ----
     const segResults=[], fitResults=[];
     let cumFrictionHeadM=0, cumElevationM=0, cumLengthM=0, cumFittingCount=0;
     const lengthBySize={};
-
     pipeline.forEach((item,idx)=>{
       if(item.type==='segment'){
         const geo=this.segmentGeometry(item);
-        const Qseg=this.segmentQ(item, fluid, Q_m3s);
+        const Qseg=flowMap.get(item.id);
         const V=Qseg/geo.area;
         const re=ReynoldsCalculator.compute(V,geo.D,nu);
         const regime=ReynoldsCalculator.regime(re);
@@ -1342,8 +1426,10 @@ class PipelineCalculator{
         cumLengthM += item.lengthM;
         const lbl=this.sizeLabel(item);
         lengthBySize[lbl]=(lengthBySize[lbl]||0)+item.lengthM;
+      } else if(item.type==='junction'){
+        // no additional head loss modeled for the junction fitting itself; flow already resolved in Pass 1
       } else {
-        const r=this.fittingLoss(item, pipeline, idx, fluid, Q_m3s);
+        const r=this.fittingLossWithMap(item, pipeline, idx, flowMap);
         const name = item.category==='custom' ? (item.customName||'Custom Component') : item.subtype;
         const pa=rho*g*r.headLossM;
         fitResults.push({id:item.id, name, category:item.category, K:r.K, V_ref:r.V_ref, headLossM:r.headLossM, pa, note:r.note, qty:item.qty||1});
@@ -1377,7 +1463,7 @@ class PipelineCalculator{
     }
 
     return {
-      segResults, fitResults, rho, mu, nu, Q_m3s,
+      segResults, fitResults, junctionResults, rho, mu, nu, Q_m3s,
       cumFrictionHeadM, cumElevationM, cumLengthM, cumFittingCount, lengthBySize,
       frictionPressureDropPa, elevationPressurePa, staticPressurePa, totalSystemPressurePa, totalRequiredPressurePa,
       isGravityAssisted, gravityAssistancePa, netAvailablePressurePa, totalDynamicHeadM, totalDynamicHeadMDisplay,
@@ -1385,9 +1471,47 @@ class PipelineCalculator{
     };
   }
 
+  /** Resolve one fitting's head loss (m) given a flow rate. Used only by systemHeadAtFlow's sweep, which
+      does not model junction flow changes at swept (non-design) flow rates — a known, disclosed
+      simplification; the main run() above is fully junction-aware. */
+  fittingLoss(item, pipeline, idx, fluid, globalQ_m3s){
+    const g=this.g;
+    if(item.category==='transition'){
+      const prevSeg=this._findPrevSegment(pipeline,idx), nextSeg=this._findNextSegment(pipeline,idx);
+      if(!prevSeg || !nextSeg) return {K:0, V_ref:0, headLossM:0, note:'Needs a pipe segment on both sides to compute.'};
+      const g1=this.segmentGeometry(prevSeg), g2=this.segmentGeometry(nextSeg);
+      const Q1=this.segmentQ(prevSeg,fluid,globalQ_m3s), Q2=this.segmentQ(nextSeg,fluid,globalQ_m3s);
+      const V1=Q1/g1.area, V2=Q2/g2.area;
+      if(item.subtype==='Sudden Expansion'){
+        return {K:null, V_ref:Math.max(V1,V2), headLossM:Math.pow(V1-V2,2)/(2*g), note:''};
+      }
+      if(item.subtype==='Concentric Expander'||item.subtype==='Eccentric Expander'){
+        let h=0.3*Math.pow(V1-V2,2)/(2*g);
+        if(item.subtype==='Eccentric Expander') h*=1.15;
+        return {K:null, V_ref:Math.max(V1,V2), headLossM:h, note:''};
+      }
+      const Amin=Math.min(g1.area,g2.area), Amax=Math.max(g1.area,g2.area);
+      const r=Amin/Amax;
+      const Vmax=(g1.area<g2.area?V1:V2);
+      let K = item.subtype==='Sudden Contraction' ? 0.5*(1-r) : 0.25*(1-r);
+      if(item.subtype==='Eccentric Reducer') K*=1.15;
+      return {K, V_ref:Vmax, headLossM:K*Vmax*Vmax/(2*g), note:''};
+    }
+    const prevSeg=this._findPrevSegment(pipeline,idx), nextSeg=this._findNextSegment(pipeline,idx);
+    const refSeg = prevSeg || nextSeg;
+    if(!refSeg) return {K:0, V_ref:0, headLossM:0, note:'Needs an adjacent pipe segment to compute velocity.'};
+    const geo=this.segmentGeometry(refSeg);
+    const V_ref = this.segmentQ(refSeg,fluid,globalQ_m3s)/geo.area;
+    const qty = item.qty || 1;
+    const baseK = item.category==='custom' ? (item.customK||0) : (item.kOverride!=null ? item.kOverride : this.app.minorDb.kFor(item.subtype));
+    const K = baseK*qty;
+    return {K, V_ref, headLossM: K*V_ref*V_ref/(2*g), note:''};
+  }
+
   /** Recompute total system head at an arbitrary sweep flow rate — used for the pump/system curve chart.
       Segments with a manual flow override keep their fixed value regardless of the sweep; only
-      "global"-mode segments scale with the swept flow. */
+      "global"-mode segments scale with the swept flow. Does not re-simulate junction splitting at swept
+      flow rates (see fittingLoss note above). */
   systemHeadAtFlow(pipeline, testQ_m3s, frictionMethod, fluid){
     const g=this.g, rho=fluid.density, mu=fluid.viscosity_Pas, nu=mu/rho;
     let headM=0, elevM=0;
@@ -1401,7 +1525,7 @@ class PipelineCalculator{
         const f=FrictionFactorCalculator.compute(frictionMethod, Math.max(re,1), relRough);
         headM += f*(item.lengthM/geo.D)*(V*V)/(2*g);
         elevM += item.elevationM;
-      } else {
+      } else if(item.type==='fitting'){
         headM += this.fittingLoss(item, pipeline, idx, fluid, testQ_m3s).headLossM;
       }
     });
@@ -1416,26 +1540,58 @@ class PipelineCalculator{
    engine works purely on arrays of {Q,H,Eff,P,NPSHr} points, independent of
    how they got there.
    ========================================================================== */
+class MonotonicSpline{
+  static build(points, key){
+    const pts=[...points]
+      .filter(p=>p.Q!=null && !isNaN(p.Q) && p[key]!=null && !isNaN(p[key]))
+      .sort((a,b)=>a.Q-b.Q);
+    const n=pts.length;
+    if(n===0){ const f=()=>null; f.xMin=0; f.xMax=0; f.n=0; return f; }
+    if(n===1){ const v=pts[0][key], x0=pts[0].Q; const f=()=>v; f.xMin=x0; f.xMax=x0; f.n=1; return f; }
+    const xs=pts.map(p=>p.Q), ys=pts.map(p=>p[key]);
+    const d=[];
+    for(let i=0;i<n-1;i++){ const dx=xs[i+1]-xs[i]; d.push(dx>1e-9 ? (ys[i+1]-ys[i])/dx : 0); }
+    const m=new Array(n);
+    m[0]=d[0]; m[n-1]=d[n-2];
+    for(let i=1;i<n-1;i++){
+      if(d[i-1]===0 || d[i]===0 || (d[i-1]>0)!==(d[i]>0)) m[i]=0;
+      else m[i]=(d[i-1]+d[i])/2;
+    }
+    for(let i=0;i<n-1;i++){
+      if(d[i]===0){ m[i]=0; m[i+1]=0; continue; }
+      const a=m[i]/d[i], b=m[i+1]/d[i], s=a*a+b*b;
+      if(s>9){ const tau=3/Math.sqrt(s); m[i]=tau*a*d[i]; m[i+1]=tau*b*d[i]; }
+    }
+    const evaluate=(x)=>{
+      if(x<=xs[0]) return ys[0]+m[0]*(x-xs[0]);
+      if(x>=xs[n-1]) return ys[n-1]+m[n-1]*(x-xs[n-1]);
+      let i=0; while(i<n-2 && x>xs[i+1]) i++;
+      const h=xs[i+1]-xs[i], t=h>1e-9?(x-xs[i])/h:0, t2=t*t, t3=t2*t;
+      const h00=2*t3-3*t2+1, h10=t3-2*t2+t, h01=-2*t3+3*t2, h11=t3-t2;
+      return h00*ys[i] + h10*h*m[i] + h01*ys[i+1] + h11*h*m[i+1];
+    };
+    evaluate.xMin=xs[0]; evaluate.xMax=xs[n-1]; evaluate.n=n;
+    return evaluate;
+  }
+}
+
 class PumpEngine{
-  /** Piecewise-linear interpolation of `key` at flow Q (m3/h) over a points array sorted by Q ascending.
-      Flat extrapolation beyond the entered range (holds the nearest end value) rather than guessing. */
   static interp(points, Q, key){
     if(!points || points.length===0) return null;
-    const sorted=[...points].sort((a,b)=>a.Q-b.Q);
-    if(Q<=sorted[0].Q) return sorted[0][key];
-    if(Q>=sorted[sorted.length-1].Q) return sorted[sorted.length-1][key];
-    for(let i=0;i<sorted.length-1;i++){
-      const a=sorted[i], b=sorted[i+1];
-      if(Q>=a.Q && Q<=b.Q){
-        if(b.Q===a.Q) return a[key];
-        const t=(Q-a.Q)/(b.Q-a.Q);
-        return a[key]+t*(b[key]-a[key]);
-      }
-    }
-    return sorted[sorted.length-1][key];
+    if(points.length===1){ const p=points[0]; return (p[key]!=null && !isNaN(p[key]))? p[key] : null; }
+    const evalFn=MonotonicSpline.build(points, key);
+    if(evalFn.n===0) return null;
+    let v=evalFn(Q);
+    if(v==null) return null;
+    if(v<0) v=0;
+    return v;
   }
-  /** Scale an entire point set to a new frequency via the affinity laws: Q∝N, H∝N², P∝N³. Efficiency is
-      conventionally treated as unchanged at the corresponding (scaled) point on the affinity-law parabola. */
+  static isExtrapolated(points, Q){
+    if(!points || points.length===0) return false;
+    const qs=points.map(p=>p.Q).filter(q=>q!=null && !isNaN(q));
+    if(qs.length===0) return false;
+    return Q<Math.min(...qs) || Q>Math.max(...qs);
+  }
   static scaleToFrequency(points, ratedHz, targetHz){
     const r = targetHz/ratedHz;
     return points.map(p=>({Q:p.Q*r, H:p.H*r*r, Eff:p.Eff, P:p.P*r*r*r, NPSHr: p.NPSHr!=null? p.NPSHr*r*r : null}));
@@ -1557,6 +1713,9 @@ class ReportGenerator{
       <table><tr><th>Segment</th><th>Size</th><th>OD/Wall/ID (mm)</th><th>Flow</th><th>Velocity</th><th>Reynolds</th><th>f</th><th>Major Loss</th><th>Friction ΔP</th></tr>${segRows}</table>
       <h2>3. Fittings</h2>
       <table><tr><th>Fitting</th><th>K</th><th>Minor Loss</th><th>ΔP</th></tr>${fitRows||'<tr><td colspan="4">No fittings added.</td></tr>'}</table>
+      ${(res.junctionResults&&res.junctionResults.length)? `<h2>3b. Junctions &amp; Mass Balance</h2>
+      <table><tr><th>Junction</th><th>Incoming (m³/h)</th><th>Outgoing (m³/h)</th><th>Velocity</th><th>Flow Direction</th><th>Mass Balance</th></tr>${res.junctionResults.map(j=>`<tr><td>${j.label}</td><td>${fmt(j.incomingTotalM3h,2)}</td><td>${fmt(j.outgoingListM3h.reduce((s,b)=>s+b.flowM3h,0),2)}</td><td>${j.velocityAtJunction!=null?fmt(j.velocityAtJunction,2)+' m/s':'—'}</td><td>${j.flowDirection}</td><td><b>${j.massBalance.status}</b> — ${j.massBalance.msg}</td></tr>`).join('')}</table>
+      <p style="font-size:11px;color:#888;">Branches that do not continue the main line are recorded for mass-balance purposes only; their own downstream pipework is not modeled in this linear pipeline.</p>` : ''}
       <h2>4. Governing Equations</h2>
       <div class="equation" style="display:block;background:#f6f6f6;color:#B5490A;border:1px solid #eee;padding:8px;margin:6px 0;">h_f = f · (L/D) · (V² / 2g) — Darcy–Weisbach</div>
       <div class="equation" style="display:block;background:#f6f6f6;color:#B5490A;border:1px solid #eee;padding:8px;margin:6px 0;">1/√f = −2log₁₀(ε/3.7D + 2.51/(Re√f)) — Colebrook–White</div>
@@ -1624,6 +1783,7 @@ class PressureDropApp{
     this._nextId=1;
     this.currentChartTab='profile';
     this.pumpCurvePoints=[]; // manually-entered {Q(m3/h),H(m),Eff(%),P(kW),NPSHr(m)} pump curve points
+    this.pumpImportResult=null; // last CSV import result (verification data + validity), or null for manual entry
     this.velocityTemplates={
       'Water Distribution':{vMin:0.9, vMax:3.0},
       'Cooling Water':{vMin:1.0, vMax:2.5},
@@ -1759,6 +1919,11 @@ class PressureDropApp{
       this.pipeline.push({id:this.newId(), type:'fitting', category:'simple', subtype:this.minorDb.names()[3], qty:1, kOverride:null, customName:'', customK:0});
       this.renderPipelineList(); this.recalculate();
     });
+    this.el('addJunctionBtn').addEventListener('click',()=>{
+      this.pipeline.push({id:this.newId(), type:'junction', kind:'merge', label:'Merge Junction', includeUpstream:true,
+        branches:[{name:'Branch A', flowM3h:0}], mainBranchIndex:0, expectedHeaderM3h:null});
+      this.renderPipelineList(); this.recalculate();
+    });
     this.el('clearPipeline').addEventListener('click',()=>{
       if(confirm('Clear the entire pipeline layout?')){ this.pipeline=[]; this.renderPipelineList(); this.recalculate(); }
     });
@@ -1873,6 +2038,50 @@ class PressureDropApp{
           </div>
         </div>`;
       }
+      if(item.type==='junction'){
+        const isMerge = item.kind==='merge';
+        const branchRows = (item.branches||[]).map((b,bi)=>`
+          <div class="jb-row" data-branch-idx="${bi}">
+            <div class="field"><label>Branch Name</label><input class="input" data-bf="name" value="${(b.name||'').replace(/"/g,'&quot;')}"></div>
+            <div class="field"><label>Flow (m³/h)</label><input class="input" data-bf="flowM3h" type="number" step="any" value="${b.flowM3h||0}"></div>
+            ${!isMerge?`<div class="field" style="min-width:90px;"><label>Main Line</label><input type="radio" name="mainBranch_${item.id}" data-bf="isMain" ${item.mainBranchIndex===bi?'checked':''} style="width:20px;height:20px;margin-top:6px;"></div>`:''}
+            <div><button class="btn btn-sm" data-jact="delbranch" data-branch-idx="${bi}" title="Remove branch">✕</button></div>
+          </div>`).join('');
+        return `
+        <div class="pl-item junction ${isMerge?'merge':'split'}" data-id="${item.id}">
+          <div class="pl-item-top">
+            <div class="pl-item-label"><span class="pl-order-badge" style="background:${isMerge?'#2ECC71':'#8B5CF6'};">${idx+1}</span> JUNCTION</div>
+            <div class="pl-controls">
+              <button data-act="up" title="Move up">↑</button>
+              <button data-act="down" title="Move down">↓</button>
+              <button data-act="del" title="Delete">✕</button>
+            </div>
+          </div>
+          <div class="pl-fields">
+            <div class="field"><label>Junction Type</label>
+              <select class="select" data-jf="label">
+                ${['Merge Junction','Header Junction','Split Junction','Tee Branch Junction','Manifold Junction'].map(l=>`<option value="${l}" ${item.label===l?'selected':''}>${l}</option>`).join('')}
+              </select>
+            </div>
+            ${isMerge?`
+            <div class="field"><label><input type="checkbox" data-jf="includeUpstream" ${item.includeUpstream!==false?'checked':''}> Include upstream flow as a branch</label>
+              <div class="hint" data-upstream-flow="${item.id}">Upstream: — m³/h</div>
+            </div>
+            <div class="field"><label>Expected Header Flow (m³/h) <small style="font-weight:400;">optional check</small></label>
+              <input class="input" data-jf="expectedHeaderM3h" type="number" step="any" placeholder="blank = skip" value="${item.expectedHeaderM3h!=null?item.expectedHeaderM3h:''}">
+            </div>`:`
+            <div class="field"><label>Incoming Flow <small style="font-weight:400;">(auto)</small></label>
+              <div class="input" data-incoming-flow="${item.id}" style="font-weight:700; display:flex; align-items:center;">— m³/h</div>
+            </div>`}
+          </div>
+          <div style="margin-top:10px;">
+            <div style="font-size:11px; color:var(--text-faint); text-transform:uppercase; letter-spacing:1px; margin-bottom:6px;">${isMerge?'Incoming Branches':'Outgoing Branches (select which continues as the main line)'}</div>
+            ${branchRows}
+            <button class="btn btn-sm" data-jact="addbranch" style="margin-top:4px;">+ Add Branch</button>
+          </div>
+          <div class="alert alert-info" data-junction-summary="${item.id}" style="margin-top:10px;">Calculating…</div>
+        </div>`;
+      }
       // fitting
       const isTransition = item.category==='transition';
       const isCustom = item.category==='custom';
@@ -1934,6 +2143,50 @@ class PressureDropApp{
       } else {
         row.querySelector('[data-f="category"]').value=item.category;
       }
+    });
+
+    // junction-specific bindings (data-jf / data-bf attributes, so the generic data-f handler never touches them)
+    container.querySelectorAll('.pl-item.junction').forEach(row=>{
+      const item=this.pipeline.find(p=>p.id===row.dataset.id);
+      if(!item) return;
+      const labelSel=row.querySelector('[data-jf="label"]');
+      if(labelSel) labelSel.addEventListener('change',()=>{
+        const prevKind=item.kind;
+        item.label=labelSel.value;
+        item.kind=['Merge Junction','Header Junction'].includes(item.label)?'merge':'split';
+        item.branches=item.branches||[];
+        if(item.kind!==prevKind){ item.mainBranchIndex=0; }
+        if(item.branches.length===0) item.branches.push({name:'Branch A', flowM3h:0});
+        if(item.label==='Tee Branch Junction'){ while(item.branches.length<2) item.branches.push({name:'Branch '+(item.branches.length+1), flowM3h:0}); }
+        this.renderPipelineList(); this.recalculate();
+      });
+      const upCb=row.querySelector('[data-jf="includeUpstream"]');
+      if(upCb) upCb.addEventListener('change',()=>{ item.includeUpstream=upCb.checked; this.recalculate(); });
+      const expInp=row.querySelector('[data-jf="expectedHeaderM3h"]');
+      if(expInp) expInp.addEventListener('input',()=>{ item.expectedHeaderM3h = expInp.value===''? null : parseFloat(expInp.value); this.recalculate(); });
+      row.querySelectorAll('[data-bf]').forEach(inp=>{
+        const bi=parseInt(inp.closest('[data-branch-idx]').dataset.branchIdx);
+        const field=inp.dataset.bf;
+        inp.addEventListener(field==='isMain'?'change':'input',()=>{
+          if(field==='isMain'){ item.mainBranchIndex=bi; }
+          else if(field==='flowM3h'){ item.branches[bi].flowM3h=parseFloat(inp.value)||0; }
+          else { item.branches[bi][field]=inp.value; }
+          this.recalculate();
+        });
+      });
+      const addBtn=row.querySelector('[data-jact="addbranch"]');
+      if(addBtn) addBtn.addEventListener('click',()=>{
+        item.branches=item.branches||[];
+        item.branches.push({name:'Branch '+(item.branches.length+1), flowM3h:0});
+        this.renderPipelineList(); this.recalculate();
+      });
+      row.querySelectorAll('[data-jact="delbranch"]').forEach(btn=>{
+        btn.addEventListener('click',()=>{
+          item.branches.splice(parseInt(btn.dataset.branchIdx),1);
+          if(item.mainBranchIndex>=item.branches.length) item.mainBranchIndex=0;
+          this.renderPipelineList(); this.recalculate();
+        });
+      });
     });
 
     // bind controls
@@ -2048,6 +2301,10 @@ class PressureDropApp{
     if(res.segResults.length===0) checks.push({status:'WARNING', msg:'No pipe segments defined yet — add at least one segment on the Pipeline Layout page.'});
     const fb=this.buildFlowBalanceCheck(res);
     if(fb) checks.push({status:'FAIL', msg:fb.msg});
+    (res.junctionResults||[]).forEach(j=>{
+      if(j.massBalance.status==='ERROR') checks.push({status:'FAIL', msg:`${j.label}: ${j.massBalance.msg}`});
+      else checks.push({status:'PASS', msg:`${j.label}: Mass Balanced (${j.incomingTotalM3h.toFixed(2)} m³/h).`});
+    });
     return checks;
   }
   /** Mass-balance sanity check: no manually-overridden segment (or combination of them) should carry more
@@ -2135,6 +2392,8 @@ class PressureDropApp{
     safe(()=>this.updateSegmentVelocityBadges(res), 'updateSegmentVelocityBadges');
     safe(()=>this.updateSegmentDimsBadges(res), 'updateSegmentDimsBadges');
     safe(()=>this.updateSegmentReDpBadges(res), 'updateSegmentReDpBadges');
+    safe(()=>this.updateJunctionBadges(res), 'updateJunctionBadges');
+    safe(()=>this.renderJunctionSummaryTable(res), 'renderJunctionSummaryTable');
     safe(()=>this.renderFlowBalanceAlert(res), 'renderFlowBalanceAlert');
     safe(()=>this.renderPipeSizeRecommendation(res), 'renderPipeSizeRecommendation');
     safe(()=>this.renderPipelineDiagram(res), 'renderPipelineDiagram');
@@ -2303,6 +2562,15 @@ class PressureDropApp{
     const nodes=['<div class="pd-node" style="border-left-color:var(--pass);"><div class="pd-title">🔵 Inlet</div><div class="pd-sub">Flow start</div></div>'];
     this.pipeline.forEach(item=>{
       nodes.push('<div class="pd-arrow">→</div>');
+      if(item.type==='junction'){
+        const jr=(res.junctionResults||[]).find(j=>j.id===item.id);
+        const isMerge=item.kind==='merge';
+        const ok=!jr || jr.massBalance.status==='PASS';
+        nodes.push(`<div class="pd-node" style="border-left:4px solid ${ok?(isMerge?'#2ECC71':'#8B5CF6'):'var(--fail)'};">
+          <div class="pd-title">${isMerge?'🔀':'🔱'} ${item.label}</div>
+          <div class="pd-sub">${jr?jr.incomingTotalM3h.toFixed(1)+(isMerge?' m³/h out':' m³/h in'):''}<br>${ok?'✓ balanced':'⚠ imbalance'}</div></div>`);
+        return;
+      }
       if(item.type==='segment'){
         const segRes=res.segResults.find(s=>s.id===item.id);
         nodes.push(`<div class="pd-node segment">
@@ -2318,6 +2586,43 @@ class PressureDropApp{
     nodes.push('<div class="pd-arrow">→</div>');
     nodes.push('<div class="pd-node" style="border-left-color:var(--fail);"><div class="pd-title">🔴 Outlet</div><div class="pd-sub">'+this.units.m3hFromM3s(res.Q_m3s).toFixed(1)+' '+u.flow+'</div></div>');
     target.innerHTML = `<div class="pd-diagram">${nodes.join('')}</div>`;
+  }
+
+  /** Live per-junction readouts on each junction card (upstream/incoming flow, mass balance, velocity, direction). */
+  updateJunctionBadges(res){
+    (res.junctionResults||[]).forEach(j=>{
+      const upEl=document.querySelector(`[data-upstream-flow="${j.id}"]`);
+      if(upEl){
+        const up=j.incomingList.find(b=>b.name.startsWith('Upstream'));
+        upEl.textContent = up ? `Upstream: ${up.flowM3h.toFixed(2)} m³/h` : 'Upstream flow excluded from this junction';
+      }
+      const inEl=document.querySelector(`[data-incoming-flow="${j.id}"]`);
+      if(inEl) inEl.textContent=`${j.incomingTotalM3h.toFixed(2)} m³/h`;
+      const sumEl=document.querySelector(`[data-junction-summary="${j.id}"]`);
+      if(sumEl){
+        const ok=j.massBalance.status==='PASS';
+        const outTotal=j.outgoingListM3h.reduce((s,b)=>s+b.flowM3h,0);
+        sumEl.className=`alert ${ok?'alert-pass':'alert-fail'}`;
+        sumEl.innerHTML=`<div><b>${ok?'PASS — Mass Balanced':'ERROR — Mass Balance Violated'}</b><br>${j.massBalance.msg}<br>
+          Incoming: <b>${j.incomingTotalM3h.toFixed(2)}</b> m³/h · Outgoing: <b>${outTotal.toFixed(2)}</b> m³/h<br>
+          ${j.velocityAtJunction!=null?`Velocity at junction: <b>${j.velocityAtJunction.toFixed(2)}</b> m/s · `:''}Flow direction: ${j.flowDirection}</div>`;
+      }
+    });
+  }
+
+  /** Consolidated Junction Summary table on the Results page (hidden when the pipeline has no junctions). */
+  renderJunctionSummaryTable(res){
+    const card=this.el('junctionSummaryCard'); if(!card) return;
+    const list=res.junctionResults||[];
+    card.style.display = list.length ? 'block' : 'none';
+    this.el('junctionSummaryTable').innerHTML = list.map((j,i)=>{
+      const item=this.pipeline.find(p=>p.id===j.id);
+      const outTotal=j.outgoingListM3h.reduce((s,b)=>s+b.flowM3h,0);
+      let diff=j.incomingTotalM3h-outTotal;
+      if(j.kind==='merge' && item && item.expectedHeaderM3h!=null && item.expectedHeaderM3h!=='') diff=j.incomingTotalM3h-item.expectedHeaderM3h;
+      const ok=j.massBalance.status==='PASS';
+      return `<tr><td>#${i+1}</td><td>${j.label}</td><td>${j.incomingTotalM3h.toFixed(2)}</td><td>${outTotal.toFixed(2)}</td><td>${diff.toFixed(2)}</td><td>${j.velocityAtJunction!=null?j.velocityAtJunction.toFixed(2)+' m/s':'—'}</td><td>${j.flowDirection}</td><td><span class="kpi-status status-${ok?'PASS':'FAIL'}">${ok?'PASS — Balanced':'ERROR'}</span></td></tr>`;
+    }).join('');
   }
 
   renderPipelineResults(res){
@@ -2348,7 +2653,8 @@ class PressureDropApp{
       <div class="summary-line"><span>Total Fittings</span><b>${res.cumFittingCount}</b></div>
       <div class="summary-line"><span>Total Valves</span><b>${valveCount}</b></div>
       <div class="summary-line"><span>Total Reducers / Contractions</span><b>${reducerCount}</b></div>
-      <div class="summary-line"><span>Total Expanders / Expansions</span><b>${expanderCount}</b></div>`;
+      <div class="summary-line"><span>Total Expanders / Expansions</span><b>${expanderCount}</b></div>
+      <div class="summary-line"><span>Total Junctions</span><b>${(res.junctionResults||[]).length}</b></div>`;
 
     // Pressure Loss Breakdown — ranked with % (lives on the Loss Breakdown page)
     const breakdown=this.buildLossBreakdown(res);
@@ -2574,6 +2880,7 @@ class PressureDropApp{
       const rows=[['Type','Name','OD/Wall/ID (mm)','Flow','Velocity/K','Loss (m)','Pressure (kPa)']];
       res.segResults.forEach(s=>rows.push(['Segment',s.name,`${s.odMm.toFixed(2)} / ${s.wallMm!=null?s.wallMm.toFixed(2):'—'} / ${s.idMm.toFixed(2)}`,(s.Q_m3s*3600).toFixed(2)+' m³/h'+(s.flowMode!=='global'?' (manual)':''),s.V.toFixed(3)+' m/s',s.majorLossM.toFixed(3),(s.frictionPa/1000).toFixed(2)]));
       res.fitResults.forEach(f=>rows.push(['Fitting',f.name,'','',f.K!=null?f.K.toFixed(3):'—',f.headLossM.toFixed(3),(f.pa/1000).toFixed(2)]));
+      (res.junctionResults||[]).forEach(j=>rows.push(['Junction',`${j.label} (${j.massBalance.status})`,'',`${j.incomingTotalM3h.toFixed(2)} m³/h in / ${j.outgoingListM3h.reduce((s,b)=>s+b.flowM3h,0).toFixed(2)} m³/h out`,'','','']));
       rows.push(['','Friction Pressure Drop','','','',(res.cumFrictionHeadM).toFixed(3),(res.frictionPressureDropPa/1000).toFixed(2)]);
       if(res.isGravityAssisted){
         rows.push(['','Gravity Assistance','','','','',(res.gravityAssistancePa/1000).toFixed(2)]);
@@ -2593,6 +2900,7 @@ class PressureDropApp{
       const rows=[['Type','Name','OD/Wall/ID (mm)','Flow','Velocity/K','Loss (m)','Pressure (kPa)']];
       res.segResults.forEach(s=>rows.push(['Segment',s.name,`${s.odMm.toFixed(2)} / ${s.wallMm!=null?s.wallMm.toFixed(2):'—'} / ${s.idMm.toFixed(2)}`,(s.Q_m3s*3600).toFixed(2)+' m³/h'+(s.flowMode!=='global'?' (manual)':''),s.V.toFixed(3)+' m/s',s.majorLossM.toFixed(3),(s.frictionPa/1000).toFixed(2)]));
       res.fitResults.forEach(f=>rows.push(['Fitting',f.name,'','',f.K!=null?f.K.toFixed(3):'—',f.headLossM.toFixed(3),(f.pa/1000).toFixed(2)]));
+      (res.junctionResults||[]).forEach(j=>rows.push(['Junction',`${j.label} (${j.massBalance.status})`,'',`${j.incomingTotalM3h.toFixed(2)} m³/h in / ${j.outgoingListM3h.reduce((s,b)=>s+b.flowM3h,0).toFixed(2)} m³/h out`,'','','']));
       ExcelExporter.download('pressuredrop_pipeline_results.xls', rows);
     });
     this.el('expJson').addEventListener('click',()=>{
@@ -2767,10 +3075,16 @@ class PressureDropApp{
       const file=e.target.files[0]; if(!file) return;
       const reader=new FileReader();
       reader.onload=()=>{
-        const pts=this.parsePumpCsv(reader.result);
-        if(pts.length===0){ alert('Could not find valid Flow/Head data rows in that CSV. Expect a header row with Flow, Head, Efficiency, Power, NPSHr columns.'); return; }
-        this.pumpCurvePoints = pts;
+        const result=this.parsePumpCsv(reader.result);
+        this.pumpImportResult=result;
+        if(!result.valid){
+          this.renderPumpImportVerification();
+          alert('CSV IMPORT ERROR — '+result.errorMsg);
+          return;
+        }
+        this.pumpCurvePoints = result.points.map(p=>({...p}));
         this.renderPumpPointsTable();
+        this.renderPumpImportVerification();
         this.recalculate();
       };
       reader.readAsText(file);
@@ -2794,33 +3108,100 @@ class PressureDropApp{
     });
     this.el('pumpAddPointBtn').addEventListener('click',()=>{
       this.pumpCurvePoints.push({Q:0,H:0,Eff:0,P:0,NPSHr:null});
-      this.renderPumpPointsTable(); this.recalculate();
+      this.pumpImportResult=null;
+      this.renderPumpPointsTable(); this.renderPumpImportVerification(); this.recalculate();
     });
     this.el('pumpClearBtn').addEventListener('click',()=>{
-      if(confirm('Clear all pump curve points?')){ this.pumpCurvePoints=[]; this.renderPumpPointsTable(); this.recalculate(); }
+      if(confirm('Clear all pump curve points?')){
+        this.pumpCurvePoints=[]; this.pumpImportResult=null;
+        this.renderPumpPointsTable(); this.renderPumpImportVerification(); this.recalculate();
+      }
     });
     this.el('pumpRatedHz').addEventListener('input',()=>this.recalculate());
     this.el('pumpCurrentHz').addEventListener('input',()=>this.recalculate());
     this.renderPumpPointsTable();
+    this.renderPumpImportVerification();
   }
 
-  /** Parse a CSV with header row (Flow, Head, Efficiency, Power, NPSHr — any order, case-insensitive)
-      into pump curve points. Returns [] if no valid Flow+Head rows are found. */
   parsePumpCsv(text){
-    const lines=text.split(/\r?\n/).map(l=>l.trim()).filter(l=>l.length>0);
-    if(lines.length<2) return [];
-    const header=lines[0].split(',').map(h=>h.trim().toLowerCase());
-    const findCol=(...keys)=>header.findIndex(h=>keys.some(k=>h.includes(k)));
-    const idx={ Q:findCol('flow','q'), H:findCol('head','h'), Eff:findCol('eff'), P:findCol('power','kw'), NPSHr:findCol('npsh') };
-    const points=[];
+    const lines=text.split(/\r?\n/).map(l=>l.replace(/\r$/,'')).filter(l=>l.trim().length>0);
+    const result={points:[], rawRows:[], headerDetected:[], colIndex:null, rowsImported:0, rowsRejected:0, rejectedReasons:[], valid:false, errorMsg:null};
+    if(lines.length<2){ result.errorMsg='CSV must contain a header row plus at least one data row.'; return result; }
+    const rawHeader=lines[0].split(',').map(h=>h.trim());
+    const header=rawHeader.map(h=>h.toLowerCase());
+    result.headerDetected=rawHeader;
+    const STRICT={Flow:'flow', Head:'head', Efficiency:'efficiency', Power:'power', NPSHr:'npshr'};
+    const colIndex={};
+    Object.keys(STRICT).forEach(k=>{ colIndex[k]=header.indexOf(STRICT[k]); });
+    result.colIndex=colIndex;
+    if(colIndex.Flow===-1 || colIndex.Head===-1){
+      result.errorMsg=`CSV must contain columns named exactly "Flow" and "Head" (case-insensitive, exact match — no partial matches). Detected headers: ${rawHeader.join(', ')||'(none)'}.`;
+      return result;
+    }
     for(let i=1;i<lines.length;i++){
       const cols=lines[i].split(',').map(c=>c.trim());
-      const get=(key)=>{ const v=idx[key]>=0?cols[idx[key]]:undefined; return (v!=null && v!=='')? parseFloat(v) : null; };
-      const Q=get('Q'), H=get('H');
-      if(Q==null||H==null||isNaN(Q)||isNaN(H)) continue;
-      points.push({Q, H, Eff:get('Eff')??0, P:get('P')??0, NPSHr:get('NPSHr')});
+      const flowStr=cols[colIndex.Flow], headStr=cols[colIndex.Head];
+      const flow=parseFloat(flowStr), head=parseFloat(headStr);
+      if(flowStr==null || headStr==null || flowStr==='' || headStr==='' || isNaN(flow) || isNaN(head)){
+        result.rowsRejected++;
+        result.rejectedReasons.push(`Row ${i+1}: missing or non-numeric Flow/Head — "${lines[i]}"`);
+        continue;
+      }
+      const effStr = colIndex.Efficiency>=0 ? cols[colIndex.Efficiency] : undefined;
+      const powStr = colIndex.Power>=0 ? cols[colIndex.Power] : undefined;
+      const npshStr = colIndex.NPSHr>=0 ? cols[colIndex.NPSHr] : undefined;
+      const effVal = (effStr!=null && effStr!=='') ? parseFloat(effStr) : 0;
+      const powVal = (powStr!=null && powStr!=='') ? parseFloat(powStr) : 0;
+      const npshVal = (npshStr!=null && npshStr!=='') ? parseFloat(npshStr) : null;
+      const point={Q:flow, H:head, Eff:isNaN(effVal)?0:effVal, P:isNaN(powVal)?0:powVal, NPSHr:(npshVal!=null && !isNaN(npshVal))?npshVal:null};
+      result.points.push(point);
+      result.rawRows.push({rowNum:i+1, raw:lines[i], point});
+      result.rowsImported++;
     }
-    return points;
+    result.valid = result.rowsImported>0;
+    if(!result.valid) result.errorMsg='No valid data rows found — every row was missing or had non-numeric Flow/Head.';
+    if(result.valid){
+      for(const row of result.rawRows){
+        const cols=row.raw.split(',').map(c=>c.trim());
+        const checkFlow=parseFloat(cols[colIndex.Flow]), checkHead=parseFloat(cols[colIndex.Head]);
+        if(checkFlow!==row.point.Q || checkHead!==row.point.H){
+          result.valid=false;
+          result.errorMsg=`Import integrity check failed at row ${row.rowNum}: parsed value does not match the raw CSV cell.`;
+          break;
+        }
+      }
+    }
+    return result;
+  }
+
+  renderPumpImportVerification(){
+    const target=this.el('pumpImportVerification');
+    if(!target) return;
+    const r=this.pumpImportResult;
+    if(!r){ target.innerHTML=''; return; }
+    if(!r.valid){
+      target.innerHTML = `<div class="alert alert-fail">⚠ CSV IMPORT ERROR — Imported values do not match the uploaded CSV, or no valid rows were found.<br>${r.errorMsg||''}</div>
+        ${r.rejectedReasons&&r.rejectedReasons.length? `<div class="hint">${r.rejectedReasons.slice(0,8).join('<br>')}${r.rejectedReasons.length>8?`<br>…and ${r.rejectedReasons.length-8} more`:''}</div>`:''}
+        <div class="alert alert-warn">Curve generation, BEP analysis, operating point, pump validation, and VFD analysis are disabled until this is resolved — re-upload a corrected CSV or clear the curve and enter points manually.</div>`;
+      return;
+    }
+    const headerRow = ['Flow','Head','Efficiency','Power','NPSHr'].map(k=>{
+      const idx=r.colIndex[k];
+      return `<span class="tag ${idx>=0?'badge-primary':''}">${k}${idx>=0?` → col ${idx+1}`:' (not present)'}</span>`;
+    }).join(' ');
+    const sideBySide = r.rawRows.slice(0,25).map(row=>`
+      <tr><td>${row.rowNum}</td><td style="font-family:var(--font-mono);">${row.raw}</td>
+      <td style="font-family:var(--font-mono);">${row.point.Q}, ${row.point.H}, ${row.point.Eff}, ${row.point.P}, ${row.point.NPSHr??''}</td>
+      <td><span class="tag" style="color:var(--pass)">✓ match</span></td></tr>`).join('');
+    target.innerHTML = `
+      <div class="alert alert-pass">✓ CSV imported successfully — ${r.rowsImported} row(s) imported, ${r.rowsRejected} rejected. Every imported value verified to match the raw CSV exactly.</div>
+      <div class="hint" style="margin-bottom:8px;">Headers detected: ${headerRow}</div>
+      <div class="table-wrap">
+        <table><thead><tr><th>Row</th><th>Raw CSV Data</th><th>Imported (Flow, Head, Eff, Power, NPSHr)</th><th>Integrity</th></tr></thead>
+        <tbody>${sideBySide}</tbody></table>
+      </div>
+      ${r.rawRows.length>25? `<div class="hint">Showing first 25 of ${r.rawRows.length} rows.</div>`:''}
+    `;
   }
 
   renderPumpPointsTable(){
@@ -2839,13 +3220,16 @@ class PressureDropApp{
         const i=parseInt(inp.closest('tr').dataset.i);
         const v = inp.value===''? null : parseFloat(inp.value);
         this.pumpCurvePoints[i][inp.dataset.pf]=v;
+        this.pumpImportResult=null;
+        this.renderPumpImportVerification();
         this.recalculate();
       });
     });
     tbody.querySelectorAll('[data-act="delpt"]').forEach(btn=>{
       btn.addEventListener('click',()=>{
         this.pumpCurvePoints.splice(parseInt(btn.closest('tr').dataset.i),1);
-        this.renderPumpPointsTable(); this.recalculate();
+        this.pumpImportResult=null;
+        this.renderPumpPointsTable(); this.renderPumpImportVerification(); this.recalculate();
       });
     });
   }
@@ -2854,6 +3238,15 @@ class PressureDropApp{
       operating point (intersection), BEP, duty validation, and VFD/affinity-law analysis. */
   renderPumpEngineering(res){
     if(typeof Chart==='undefined') return;
+    if(this.pumpImportResult && !this.pumpImportResult.valid){
+      this.renderPumpImportVerification();
+      ['opPointKpis','bepKpis'].forEach(id=>this.el(id).innerHTML=`<div class="alert alert-fail" style="grid-column:1/-1;">Blocked — resolve the CSV import error above before analysis can run.</div>`);
+      this.el('pumpValidation').innerHTML=`<div class="alert alert-fail">Blocked — resolve the CSV import error above before pump validation can run.</div>`;
+      this.el('vfdResultKpis').innerHTML=`<div class="alert alert-fail" style="grid-column:1/-1;">Blocked — resolve the CSV import error above before VFD analysis can run.</div>`;
+      this.el('vfdSavingKpis').innerHTML=''; this.el('vfdRecommendation').innerHTML='';
+      this.charts.destroy('chartPumpCompare'); this.charts.destroy('chartVfdFreq');
+      return;
+    }
     const ctx=this.lastCtx, g=9.80665, rho=res.rho;
     const requiredQ_m3h=this.units.m3hFromM3s(res.Q_m3s);
     const requiredH_m=res.totalDynamicHeadMDisplay;
@@ -2865,7 +3258,7 @@ class PressureDropApp{
       return this.calc.systemHeadAtFlow(this.pipeline, qM3s, ctx.frictionMethod, res.fluid) + (res.staticPressurePa/(rho*g));
     };
 
-    const N=20, labels=[], sysData=[], proposedData=[];
+    const N=40, labels=[], sysData=[], proposedData=[];
     const shutoffH = requiredH_m>0? requiredH_m*1.3 : 10;
     for(let i=0;i<=N;i++){
       const q=qMax*i/N;
@@ -2874,13 +3267,17 @@ class PressureDropApp{
       proposedData.push(Math.max(shutoffH*(1-0.5*Math.pow(q/qMax,2)),0).toFixed(2));
     }
     const uploadedPts=this.pumpCurvePoints.filter(p=>p.Q!=null && p.H!=null && !isNaN(p.Q) && !isNaN(p.H));
+    const dashOutsideRange=(pts)=>(ctxSeg)=>{
+      const q0=parseFloat(labels[ctxSeg.p0DataIndex]), q1=parseFloat(labels[ctxSeg.p1DataIndex]);
+      return (PumpEngine.isExtrapolated(pts,q0) || PumpEngine.isExtrapolated(pts,q1)) ? [6,4] : undefined;
+    };
     const uploadedData = uploadedPts.length? labels.map(l=>PumpEngine.interp(uploadedPts, parseFloat(l), 'H').toFixed(2)) : null;
 
     const datasets=[
       {label:'System Curve', data:sysData, borderColor:'#FF6B00', backgroundColor:'rgba(255,107,0,0.1)', fill:true, tension:0.25},
       {label:'Proposed Pump Curve', data:proposedData, borderColor:'#42C5FF', fill:false, tension:0.3, borderDash:[6,4]}
     ];
-    if(uploadedData) datasets.push({label:'Uploaded/Manual Pump Curve', data:uploadedData, borderColor:'#2ECC71', fill:false, tension:0.15});
+    if(uploadedData) datasets.push({label:'Uploaded/Manual Pump Curve (dashed = extrapolated)', data:uploadedData, borderColor:'#2ECC71', fill:false, tension:0.15, segment:{borderDash:dashOutsideRange(uploadedPts)}});
     this.charts.render('chartPumpCompare',{type:'line',data:{labels,datasets}, options:this._lineOpts(th,'Flow (m³/h)','Head (m)')});
 
     const opPoint = uploadedPts.length>=2 ? PumpEngine.findIntersection(uploadedPts, sysHeadFn, qMax) : null;
@@ -2922,7 +3319,11 @@ class PressureDropApp{
       const mfLabels=[]; for(let i=0;i<=N;i++) mfLabels.push((qMax*1.3*i/N).toFixed(0));
       const mfDatasets=freqList.map((hz,fi)=>{
         const scaled=PumpEngine.scaleToFrequency(uploadedPts, ratedHz, hz);
-        return {label:`${hz} Hz`, data:mfLabels.map(l=>PumpEngine.interp(scaled, parseFloat(l), 'H').toFixed(2)), borderColor:`hsl(${fi*55},80%,60%)`, borderWidth:2, pointRadius:0, tension:0.2};
+        return {label:`${hz} Hz`, data:mfLabels.map(l=>PumpEngine.interp(scaled, parseFloat(l), 'H').toFixed(2)), borderColor:`hsl(${fi*55},80%,60%)`, borderWidth:2, pointRadius:0, tension:0.2,
+          segment:{borderDash:(ctxSeg)=>{
+            const q0=parseFloat(mfLabels[ctxSeg.p0DataIndex]), q1=parseFloat(mfLabels[ctxSeg.p1DataIndex]);
+            return (PumpEngine.isExtrapolated(scaled,q0) || PumpEngine.isExtrapolated(scaled,q1)) ? [5,3] : undefined;
+          }}};
       });
       mfDatasets.push({label:'System Curve', data:mfLabels.map(l=>sysHeadFn(parseFloat(l)).toFixed(2)), borderColor:th.text, borderWidth:2, borderDash:[4,3], pointRadius:0});
       this.charts.render('chartVfdFreq',{type:'line',data:{labels:mfLabels,datasets:mfDatasets}, options:this._lineOpts(th,'Flow (m³/h)','Head (m)')});
